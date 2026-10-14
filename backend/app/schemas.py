@@ -8,6 +8,8 @@ Mudá-los é uma decisão consciente (quebra o frontend). Valores monetários s�
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel, Field
 
 # Aviso de escopo reaproveitado nas respostas monetárias (metrics.md §0.1).
@@ -134,5 +136,78 @@ class RfmSegmentsResponse(BaseModel):
     )
     segments: list[RfmSegment] = Field(
         description="Segmentos ordenados por nº de domicílios (desc)."
+    )
+    note: str = Field(default=SAMPLE_NOTE, description="Escopo da receita (amostra).")
+
+
+# --- RFM detalhado (por domicílio) ---------------------------------------------
+# Enums = allow-list de valores aceitos nos query params. O FastAPI valida contra
+# estes valores e devolve 422 para qualquer coisa fora da lista (CLAUDE.md regra 7:
+# nada vindo do cliente é interpolado livre no SQL).
+
+
+class RfmSegmentName(StrEnum):
+    """Os 7 segmentos RFM nomeados (metrics.md §5.2) — valores EXATOS para filtro."""
+
+    CAMPEOES = "Campeões"
+    LEAIS = "Leais"
+    POTENCIAIS = "Potenciais"
+    NOVOS = "Novos"
+    EM_RISCO = "Em risco"
+    HIBERNANDO_PERDIDOS = "Hibernando / Perdidos"
+    OUTROS = "Outros"
+
+
+class RfmSortBy(StrEnum):
+    """Coluna de ordenação permitida (allow-list; mapeada a coluna física no Gold)."""
+
+    MONETARY_VALUE = "monetary_value"
+    RECENCY_DAYS = "recency_days"
+    FREQUENCY_BASKETS = "frequency_baskets"
+
+
+class SortOrder(StrEnum):
+    """Direção de ordenação."""
+
+    ASC = "asc"
+    DESC = "desc"
+
+
+class RfmHousehold(BaseModel):
+    """Um domicílio na visão detalhada do RFM (grão domicílio, metrics.md §5)."""
+
+    household_id: int = Field(description="Identificador do domicílio (household_id).")
+    recency_days: int = Field(
+        description="Dias desde a última compra até 2018-01-01 (R; menor = melhor)."
+    )
+    frequency_baskets: int = Field(
+        description="Nº de cestas no período (F; maior = melhor)."
+    )
+    monetary_value: float = Field(
+        description="Receita observada do domicílio na amostra (M; USD)."
+    )
+    r_score: int = Field(
+        description="Score de recência 1–5 (NTILE invertido; 5 = melhor)."
+    )
+    f_score: int = Field(description="Score de frequência 1–5 (5 = melhor).")
+    m_score: int = Field(description="Score de valor monetário 1–5 (5 = melhor).")
+    rfm_segment: str = Field(description="Segmento RFM nomeado (ex.: 'Campeões').")
+
+
+class RfmHouseholdsResponse(BaseModel):
+    """RFM por domicílio, paginado — a tabela detalhada da página RFM do frontend."""
+
+    as_of_date: str = Field(description="Data de referência (as-of) do dataset.")
+    currency: str = Field(description="Moeda dos valores monetários.")
+    total: int = Field(
+        description="Nº de domicílios que batem o filtro (para paginação; ignora limit)."
+    )
+    limit: int = Field(description="Tamanho de página aplicado (<= 200).")
+    offset: int = Field(description="Deslocamento aplicado (>= 0).")
+    segment: str | None = Field(
+        default=None, description="Eco do filtro de segmento (None = todos)."
+    )
+    households: list[RfmHousehold] = Field(
+        description="Página de domicílios, ordenada conforme sort_by/order."
     )
     note: str = Field(default=SAMPLE_NOTE, description="Escopo da receita (amostra).")

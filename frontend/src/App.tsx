@@ -12,6 +12,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
 import { Overview } from "@/pages/Overview";
+import { Rfm } from "@/pages/Rfm";
 
 interface NavItem {
   label: string;
@@ -24,7 +25,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { label: "Visão geral", to: "/", icon: LayoutDashboard },
   { label: "Receita", to: "/receita", icon: BarChart3, disabled: true },
-  { label: "Segmentos RFM", to: "/rfm", icon: Waypoints, disabled: true },
+  { label: "Segmentos RFM", to: "/rfm", icon: Waypoints },
   { label: "Clientes", to: "/clientes", icon: Users, disabled: true },
 ];
 
@@ -115,6 +116,7 @@ export function App() {
       <main className="flex-1 overflow-x-hidden px-6 py-8 md:px-10">
         <Routes>
           <Route path="/" element={<Overview />} />
+          <Route path="/rfm" element={<Rfm />} />
         </Routes>
       </main>
     </div>

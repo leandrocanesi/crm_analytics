@@ -88,6 +88,49 @@ export const rfmSegmentsSchema = z.object({
   note: z.string(),
 });
 
+/** Nomes canônicos dos 7 segmentos RFM (eco do contrato do backend). */
+export const RFM_SEGMENT_NAMES = [
+  "Campeões",
+  "Leais",
+  "Potenciais",
+  "Novos",
+  "Em risco",
+  "Hibernando / Perdidos",
+  "Outros",
+] as const;
+export type RfmSegmentName = (typeof RFM_SEGMENT_NAMES)[number];
+
+/** Colunas ordenáveis da tabela de domicílios. */
+export const RFM_SORT_FIELDS = [
+  "monetary_value",
+  "recency_days",
+  "frequency_baskets",
+] as const;
+export type RfmSortField = (typeof RFM_SORT_FIELDS)[number];
+export type SortOrder = "asc" | "desc";
+
+export const rfmHouseholdSchema = z.object({
+  household_id: z.number(),
+  recency_days: z.number(),
+  frequency_baskets: z.number(),
+  monetary_value: z.number(),
+  r_score: z.number(),
+  f_score: z.number(),
+  m_score: z.number(),
+  rfm_segment: z.string(),
+});
+
+export const rfmHouseholdsSchema = z.object({
+  as_of_date: z.string(),
+  currency: z.string(),
+  total: z.number(),
+  limit: z.number(),
+  offset: z.number(),
+  segment: z.string().nullable(),
+  households: z.array(rfmHouseholdSchema),
+  note: z.string(),
+});
+
 export type Health = z.infer<typeof healthSchema>;
 export type Meta = z.infer<typeof metaSchema>;
 export type Overview = z.infer<typeof overviewSchema>;
@@ -95,6 +138,17 @@ export type WeeklyRevenuePoint = z.infer<typeof weeklyRevenuePointSchema>;
 export type WeeklyRevenue = z.infer<typeof weeklyRevenueSchema>;
 export type RfmSegment = z.infer<typeof rfmSegmentSchema>;
 export type RfmSegments = z.infer<typeof rfmSegmentsSchema>;
+export type RfmHousehold = z.infer<typeof rfmHouseholdSchema>;
+export type RfmHouseholds = z.infer<typeof rfmHouseholdsSchema>;
+
+/** Parâmetros aceitos por GET /rfm/households (todos opcionais). */
+export interface RfmHouseholdsParams {
+  segment?: RfmSegmentName;
+  sortBy?: RfmSortField;
+  order?: SortOrder;
+  limit?: number;
+  offset?: number;
+}
 
 // ---------------------------------------------------------------------------
 // Erros tipados
@@ -187,10 +241,27 @@ async function request<T>(path: string, schema: z.ZodType<T>): Promise<T> {
   return parsed.data;
 }
 
+/** Monta a query string de /rfm/households, omitindo o que estiver indefinido. */
+function buildRfmHouseholdsQuery(params: RfmHouseholdsParams): string {
+  const search = new URLSearchParams();
+  if (params.segment) search.set("segment", params.segment);
+  if (params.sortBy) search.set("sort_by", params.sortBy);
+  if (params.order) search.set("order", params.order);
+  if (params.limit !== undefined) search.set("limit", String(params.limit));
+  if (params.offset !== undefined) search.set("offset", String(params.offset));
+  const qs = search.toString();
+  return qs ? `?${qs}` : "";
+}
+
 export const api = {
   getHealth: () => request("/health", healthSchema),
   getMeta: () => request("/meta", metaSchema),
   getOverview: () => request("/overview", overviewSchema),
   getRevenueWeekly: () => request("/revenue/weekly", weeklyRevenueSchema),
   getRfmSegments: () => request("/rfm/segments", rfmSegmentsSchema),
+  getRfmHouseholds: (params: RfmHouseholdsParams = {}) =>
+    request(
+      `/rfm/households${buildRfmHouseholdsQuery(params)}`,
+      rfmHouseholdsSchema,
+    ),
 };

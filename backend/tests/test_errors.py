@@ -35,7 +35,8 @@ def test_health_reporta_indisponivel(client_sem_snapshot: TestClient) -> None:
 
 
 @pytest.mark.parametrize(
-    "path", ["/meta", "/overview", "/revenue/weekly", "/rfm/segments"]
+    "path",
+    ["/meta", "/overview", "/revenue/weekly", "/rfm/segments", "/rfm/households"],
 )
 def test_endpoints_de_dados_retornam_503(
     client_sem_snapshot: TestClient, path: str

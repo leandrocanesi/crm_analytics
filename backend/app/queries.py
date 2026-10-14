@@ -59,3 +59,46 @@ FROM agg_household_rfm
 GROUP BY rfm_segment
 ORDER BY n_households DESC
 """
+
+# RFM por domicílio (grão domicílio, metrics.md §5) — a "tabela detalhada" do RFM.
+#
+# Segurança (CLAUDE.md regra 7): o SQL é FIXO aqui. Os únicos valores dinâmicos são
+# ligados por placeholders ``?`` (bind): o filtro de segmento, o LIMIT e o OFFSET.
+# A ordenação NÃO pode ser parametrizada por bind (SQL não liga identificadores),
+# então ``{order_by}`` e ``{order}`` são preenchidos via ``str.format`` APENAS a
+# partir dos mapas allow-list abaixo — nunca com string crua do cliente.
+# Desempate por ``household_id`` garante paginação estável (ordem total determinística).
+RFM_HOUSEHOLDS = """
+SELECT
+    household_id,
+    recency_days,
+    frequency_baskets,
+    monetary_value,
+    r_score,
+    f_score,
+    m_score,
+    rfm_segment
+FROM agg_household_rfm
+WHERE (? IS NULL OR rfm_segment = ?)
+ORDER BY {order_by} {order}, household_id ASC
+LIMIT ? OFFSET ?
+"""
+
+# COUNT com o MESMO filtro — alimenta ``total`` (nº de domicílios que batem o
+# filtro) para a paginação do frontend.
+RFM_HOUSEHOLDS_COUNT = """
+SELECT COUNT(*) AS total
+FROM agg_household_rfm
+WHERE (? IS NULL OR rfm_segment = ?)
+"""
+
+# Allow-list de colunas ordenáveis: nome exposto na API -> coluna física no Gold.
+# Apenas estes valores podem entrar no ORDER BY (defesa contra SQL injection).
+RFM_SORT_COLUMNS: dict[str, str] = {
+    "monetary_value": "monetary_value",
+    "recency_days": "recency_days",
+    "frequency_baskets": "frequency_baskets",
+}
+
+# Allow-list de direções de ordenação.
+RFM_SORT_ORDERS: dict[str, str] = {"asc": "ASC", "desc": "DESC"}

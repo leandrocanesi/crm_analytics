@@ -100,11 +100,104 @@ def test_rfm_segments_distribution(client: TestClient) -> None:
     assert counts == sorted(counts, reverse=True)
 
 
+def test_rfm_households_sem_filtro(client: TestClient) -> None:
+    r = client.get("/rfm/households")
+    assert r.status_code == 200
+    body = r.json()
+    # total ignora paginação: reconcilia o universo de domicílios.
+    assert body["total"] == HOUSEHOLD_ANCHOR
+    assert body["segment"] is None
+    assert body["limit"] == 50
+    assert body["offset"] == 0
+    # A página respeita o limit.
+    assert len(body["households"]) <= body["limit"]
+    assert len(body["households"]) == 50
+    assert body["as_of_date"] == AS_OF
+    assert body["currency"] == "USD"
+    # Cada domicílio traz o contrato completo.
+    first = body["households"][0]
+    assert set(first) == {
+        "household_id",
+        "recency_days",
+        "frequency_baskets",
+        "monetary_value",
+        "r_score",
+        "f_score",
+        "m_score",
+        "rfm_segment",
+    }
+
+
+def test_rfm_households_filtro_por_segmento(client: TestClient) -> None:
+    r = client.get("/rfm/households", params={"segment": "Campeões", "limit": 200})
+    assert r.status_code == 200
+    body = r.json()
+    # Total de Campeões no universo (contagem do snapshot real).
+    assert body["total"] == 522
+    assert body["segment"] == "Campeões"
+    # Todos os retornados pertencem ao segmento filtrado.
+    assert all(h["rfm_segment"] == "Campeões" for h in body["households"])
+    assert len(body["households"]) == 200  # limit teto
+
+
+def test_rfm_households_ordenacao_desc_monetary(client: TestClient) -> None:
+    r = client.get(
+        "/rfm/households",
+        params={"sort_by": "monetary_value", "order": "desc", "limit": 100},
+    )
+    assert r.status_code == 200
+    values = [h["monetary_value"] for h in r.json()["households"]]
+    # Desc: não-crescente; primeiro >= último.
+    assert values == sorted(values, reverse=True)
+    assert values[0] >= values[-1]
+
+
+def test_rfm_households_ordenacao_asc_recency(client: TestClient) -> None:
+    r = client.get(
+        "/rfm/households", params={"sort_by": "recency_days", "order": "asc"}
+    )
+    assert r.status_code == 200
+    values = [h["recency_days"] for h in r.json()["households"]]
+    assert values == sorted(values)
+
+
+def test_rfm_households_paginacao_estavel(client: TestClient) -> None:
+    # Desempate por household_id → páginas não se sobrepõem.
+    p1 = client.get("/rfm/households", params={"limit": 50, "offset": 0}).json()
+    p2 = client.get("/rfm/households", params={"limit": 50, "offset": 50}).json()
+    ids1 = {h["household_id"] for h in p1["households"]}
+    ids2 = {h["household_id"] for h in p2["households"]}
+    assert ids1.isdisjoint(ids2)
+
+
+def test_rfm_households_segmento_invalido_422(client: TestClient) -> None:
+    r = client.get("/rfm/households", params={"segment": "Baleias"})
+    assert r.status_code == 422
+
+
+def test_rfm_households_limit_acima_do_teto_422(client: TestClient) -> None:
+    # Decisão: limit > 200 é REJEITADO (422), não clampado silenciosamente.
+    r = client.get("/rfm/households", params={"limit": 201})
+    assert r.status_code == 422
+
+
+def test_rfm_households_sort_by_invalido_422(client: TestClient) -> None:
+    r = client.get("/rfm/households", params={"sort_by": "household_id"})
+    assert r.status_code == 422
+
+
 def test_openapi_available(client: TestClient) -> None:
     r = client.get("/openapi.json")
     assert r.status_code == 200
     paths = r.json()["paths"]
-    for path in ("/health", "/meta", "/overview", "/revenue/weekly", "/rfm/segments"):
+    for path in (
+        "/health",
+        "/meta",
+        "/overview",
+        "/revenue/weekly",
+        "/rfm/segments",
+        "/rfm/households",
+    ):
         assert path in paths
         # Contrato read-only: cada endpoint só expõe GET.
         assert set(paths[path].keys()) == {"get"}

@@ -12,12 +12,25 @@ from decimal import Decimal
 from typing import Any
 
 from .config import Settings
-from .queries import META, OVERVIEW, RFM_SEGMENTS, WEEKLY_REVENUE
+from .queries import (
+    META,
+    OVERVIEW,
+    RFM_HOUSEHOLDS,
+    RFM_HOUSEHOLDS_COUNT,
+    RFM_SEGMENTS,
+    RFM_SORT_COLUMNS,
+    RFM_SORT_ORDERS,
+    WEEKLY_REVENUE,
+)
 from .schemas import (
     MetaResponse,
     OverviewResponse,
+    RfmHousehold,
+    RfmHouseholdsResponse,
     RfmSegment,
     RfmSegmentsResponse,
+    RfmSortBy,
+    SortOrder,
     WeeklyRevenuePoint,
     WeeklyRevenueResponse,
 )
@@ -132,4 +145,53 @@ def build_rfm_segments(
         n_segments=len(segments),
         n_households_total=total_hh,
         segments=segments,
+    )
+
+
+def build_rfm_households(  # noqa: PLR0913 — filtro + paginação + ordenação (kw-only).
+    snap: SnapshotManager,
+    settings: Settings,
+    *,
+    segment: str | None,
+    sort_by: RfmSortBy,
+    order: SortOrder,
+    limit: int,
+    offset: int,
+) -> RfmHouseholdsResponse:
+    """RFM por domicílio, paginado/ordenado/filtrado.
+
+    ``segment`` já vem validado pela allow-list (enum do router) ou None.
+    ``sort_by``/``order`` são enums → resolvidos nos mapas allow-list; só assim
+    entram no ORDER BY (nunca string crua do cliente — CLAUDE.md regra 7).
+    """
+    # ORDER BY montado APENAS a partir das allow-lists (chaves = valores do enum).
+    sql = RFM_HOUSEHOLDS.format(
+        order_by=RFM_SORT_COLUMNS[sort_by.value],
+        order=RFM_SORT_ORDERS[order.value],
+    )
+    # Filtro, limit e offset entram por bind (?), jamais concatenados.
+    rows = snap.query(sql, [segment, segment, limit, offset])
+    total = int(snap.query_one(RFM_HOUSEHOLDS_COUNT, [segment, segment])["total"])
+
+    households = [
+        RfmHousehold(
+            household_id=int(r["household_id"]),
+            recency_days=int(r["recency_days"]),
+            frequency_baskets=int(r["frequency_baskets"]),
+            monetary_value=_money(r["monetary_value"]),
+            r_score=int(r["r_score"]),
+            f_score=int(r["f_score"]),
+            m_score=int(r["m_score"]),
+            rfm_segment=str(r["rfm_segment"]),
+        )
+        for r in rows
+    ]
+    return RfmHouseholdsResponse(
+        as_of_date=settings.as_of_date,
+        currency=settings.currency,
+        total=total,
+        limit=limit,
+        offset=offset,
+        segment=segment,
+        households=households,
     )
