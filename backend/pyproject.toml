@@ -1,0 +1,22 @@
+[project]
+name = "crm-analytics-backend"
+version = "0.1.0"
+description = "API FastAPI read-only do Customer Intelligence Lab"
+requires-python = ">=3.13"
+
+[tool.ruff]
+line-length = 90
+target-version = "py313"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W", "PL", "BLE"]
+# B008: Depends() em defaults é o padrão idiomático do FastAPI (não é um bug).
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR2004", "S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
