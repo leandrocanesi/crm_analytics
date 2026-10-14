@@ -30,11 +30,19 @@ yarn-debug.log*
 yarn-error.log*
 
 # ---- Dados ----
-# Dados brutos da dunnhumby NÃO vão para o git (tamanho + termos de uso).
-# Apenas o procedimento de download é versionado (docs/).
+# Dados brutos da dunnhumby NÃO vão para o git (tamanho + termos de uso /
+# licença 84.51°). Apenas metadados leves (download, proveniência) são versionados.
 data/raw/*
 !data/raw/.gitkeep
 !data/raw/README.md
+# Reincluir a pasta do dataset para permitir SOMENTE os metadados de texto;
+# os dados brutos (*.rds/*.rda) continuam ignorados pela regra completejourney/* abaixo.
+!data/raw/completejourney/
+data/raw/completejourney/*
+!data/raw/completejourney/.gitkeep
+!data/raw/completejourney/README.md
+!data/raw/completejourney/PROVENANCE.md
+!data/raw/completejourney/SHA256SUMS.txt
 
 # Dados derivados/processados e snapshots são reprodutíveis -> não versionar.
 data/processed/*
@@ -47,6 +55,10 @@ data/snapshots/*
 *.duckdb.wal
 *.duckdb.tmp/
 *.parquet
+
+# ---- Dados brutos R (dunnhumby) — nunca versionar (licença + tamanho) ----
+*.rds
+*.rda
 
 # ---- SO / Editor ----
 .DS_Store
