@@ -1,0 +1,121 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Design tokens — Customer Intelligence Lab
+  Identidade: petróleo/teal profundo + dourado âmbar (acento escasso).
+  Semânticos como CSS vars "H S% L%" (convenção shadcn: hsl(var(--token))).
+  Cores de gráfico (--chart-*) ficam em hex porque Recharts as lê cruas.
+*/
+
+@layer base {
+  :root {
+    /* ----- Light: fundo off-white esverdeado, texto teal profundo ----- */
+    --background: 162 24% 97%;
+    --foreground: 175 65% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 175 65% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 175 65% 12%;
+
+    --primary: 173 63% 24%;
+    --primary-foreground: 162 33% 97%;
+
+    --secondary: 168 28% 92%;
+    --secondary-foreground: 175 55% 18%;
+
+    --muted: 165 20% 93%;
+    --muted-foreground: 174 13% 38%;
+
+    --accent: 36 64% 45%;
+    --accent-foreground: 40 60% 98%;
+
+    --destructive: 0 70% 44%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 168 18% 88%;
+    --input: 168 18% 85%;
+    --ring: 173 63% 30%;
+
+    --radius: 0.9rem;
+
+    /* Sidebar petróleo profundo mesmo no light mode (identidade B2B) */
+    --sidebar: 176 68% 10%;
+    --sidebar-foreground: 162 28% 88%;
+    --sidebar-border: 174 45% 17%;
+    --sidebar-accent: 173 42% 20%;
+
+    /* Gráficos (hex cru p/ Recharts) */
+    --chart-revenue: #135e57;
+    --chart-accent: #c98a2e;
+    --chart-households: #135e57;
+    --chart-grid: #dce8e4;
+    --chart-axis: #5e7b75;
+    --chart-revenue-wash-from: #135e5726;
+    --chart-revenue-wash-to: #135e5700;
+  }
+
+  .dark {
+    /* ----- Dark: base teal-950/900, superfícies teal-800, texto off-white ----- */
+    --background: 177 71% 8%;
+    --foreground: 160 20% 92%;
+
+    --card: 176 68% 12%;
+    --card-foreground: 160 20% 92%;
+
+    --popover: 176 68% 13%;
+    --popover-foreground: 160 20% 92%;
+
+    --primary: 170 38% 48%;
+    --primary-foreground: 177 71% 8%;
+
+    --secondary: 175 38% 16%;
+    --secondary-foreground: 160 20% 90%;
+
+    --muted: 175 33% 15%;
+    --muted-foreground: 168 16% 62%;
+
+    --accent: 37 78% 67%;
+    --accent-foreground: 177 71% 9%;
+
+    --destructive: 0 60% 52%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 174 38% 18%;
+    --input: 174 38% 20%;
+    --ring: 170 40% 52%;
+
+    --sidebar: 178 72% 6%;
+    --sidebar-foreground: 162 24% 86%;
+    --sidebar-border: 174 40% 15%;
+    --sidebar-accent: 173 42% 16%;
+
+    --chart-revenue: #4fa89a;
+    --chart-accent: #edb868;
+    --chart-households: #4fa89a;
+    --chart-grid: #0e4a45;
+    --chart-axis: #86c6bc;
+    --chart-revenue-wash-from: #4fa89a33;
+    --chart-revenue-wash-to: #4fa89a00;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}

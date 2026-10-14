@@ -1,0 +1,196 @@
+/**
+ * Cliente de API tipado do Customer Intelligence Lab.
+ *
+ * Regras do projeto:
+ *  - O frontend NUNCA acessa o DuckDB direto; só consome esta API read-only.
+ *  - Toda resposta é validada com zod (espelha os contratos Pydantic do backend).
+ *  - O 503 (snapshot indisponível) é um estado de NEGÓCIO esperado, tratado como
+ *    erro tipado (SnapshotUnavailableError) para a UI exibir a mensagem correta.
+ */
+
+import { z } from "zod";
+
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+
+/** Nota de escopo da amostra, reaproveitada nas respostas monetárias. */
+export const SAMPLE_SCOPE_HINT =
+  "amostra do painel 84.51°/dunnhumby — não é o faturamento da rede";
+
+// ---------------------------------------------------------------------------
+// Schemas (espelham backend/app/schemas.py)
+// ---------------------------------------------------------------------------
+
+export const healthSchema = z.object({
+  status: z.string(),
+  snapshot_available: z.boolean(),
+  snapshot_version: z.string().nullable().optional(),
+  schema_version: z.string().nullable().optional(),
+});
+
+export const metaSchema = z.object({
+  schema_version: z.string(),
+  snapshot_version: z.string(),
+  built_at: z.string(),
+  published_at: z.string().nullable().optional(),
+  as_of_date: z.string(),
+  revenue_total: z.number(),
+  basket_count: z.number(),
+  household_count: z.number(),
+  currency: z.string(),
+  git_commit: z.string(),
+  content_hash: z.string(),
+  tables: z.array(z.string()),
+  note: z.string(),
+});
+
+export const overviewSchema = z.object({
+  total_revenue: z.number(),
+  n_active_households: z.number(),
+  household_universe: z.number(),
+  n_baskets: z.number(),
+  avg_basket_value: z.number(),
+  as_of_date: z.string(),
+  currency: z.string(),
+  note: z.string(),
+});
+
+export const weeklyRevenuePointSchema = z.object({
+  week: z.number(),
+  revenue: z.number(),
+  n_baskets: z.number(),
+  n_active_households: z.number(),
+  avg_basket_value: z.number(),
+});
+
+export const weeklyRevenueSchema = z.object({
+  as_of_date: z.string(),
+  currency: z.string(),
+  n_weeks: z.number(),
+  total_revenue: z.number(),
+  series: z.array(weeklyRevenuePointSchema),
+  note: z.string(),
+});
+
+export const rfmSegmentSchema = z.object({
+  segment: z.string(),
+  n_households: z.number(),
+  household_share: z.number(),
+  monetary_value: z.number(),
+  monetary_share: z.number(),
+});
+
+export const rfmSegmentsSchema = z.object({
+  as_of_date: z.string(),
+  currency: z.string(),
+  n_segments: z.number(),
+  n_households_total: z.number(),
+  segments: z.array(rfmSegmentSchema),
+  note: z.string(),
+});
+
+export type Health = z.infer<typeof healthSchema>;
+export type Meta = z.infer<typeof metaSchema>;
+export type Overview = z.infer<typeof overviewSchema>;
+export type WeeklyRevenuePoint = z.infer<typeof weeklyRevenuePointSchema>;
+export type WeeklyRevenue = z.infer<typeof weeklyRevenueSchema>;
+export type RfmSegment = z.infer<typeof rfmSegmentSchema>;
+export type RfmSegments = z.infer<typeof rfmSegmentsSchema>;
+
+// ---------------------------------------------------------------------------
+// Erros tipados
+// ---------------------------------------------------------------------------
+
+/** O snapshot ainda não foi publicado pelo Dagster (HTTP 503). */
+export class SnapshotUnavailableError extends Error {
+  readonly kind = "snapshot_unavailable" as const;
+  constructor(message = "Snapshot indisponível.") {
+    super(message);
+    this.name = "SnapshotUnavailableError";
+  }
+}
+
+/** Qualquer outra falha de rede/HTTP/parse. */
+export class ApiError extends Error {
+  readonly kind = "api_error" as const;
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** Narrowing: a UI usa isto para decidir a mensagem de erro. */
+export function isSnapshotUnavailable(
+  error: unknown,
+): error is SnapshotUnavailableError {
+  return error instanceof SnapshotUnavailableError;
+}
+
+// ---------------------------------------------------------------------------
+// Fetch + validação
+// ---------------------------------------------------------------------------
+
+async function request<T>(path: string, schema: z.ZodType<T>): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${BASE_URL}${path}`, {
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    throw new ApiError(
+      `Falha de rede ao acessar ${path}. A API está no ar em ${BASE_URL}?`,
+    );
+  }
+
+  if (response.status === 503) {
+    let detail = "Snapshot indisponível. Publique um snapshot via Dagster.";
+    try {
+      const body: unknown = await response.json();
+      if (
+        body &&
+        typeof body === "object" &&
+        "detail" in body &&
+        typeof (body as { detail: unknown }).detail === "string"
+      ) {
+        detail = (body as { detail: string }).detail;
+      }
+    } catch {
+      /* mantém a mensagem padrão */
+    }
+    throw new SnapshotUnavailableError(detail);
+  }
+
+  if (!response.ok) {
+    throw new ApiError(
+      `A API respondeu ${response.status} em ${path}.`,
+      response.status,
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new ApiError(`Resposta não-JSON em ${path}.`, response.status);
+  }
+
+  const parsed = schema.safeParse(payload);
+  if (!parsed.success) {
+    throw new ApiError(
+      `Contrato inesperado em ${path}: ${parsed.error.issues
+        .map((i) => i.path.join("."))
+        .join(", ")}.`,
+    );
+  }
+  return parsed.data;
+}
+
+export const api = {
+  getHealth: () => request("/health", healthSchema),
+  getMeta: () => request("/meta", metaSchema),
+  getOverview: () => request("/overview", overviewSchema),
+  getRevenueWeekly: () => request("/revenue/weekly", weeklyRevenueSchema),
+  getRfmSegments: () => request("/rfm/segments", rfmSegmentsSchema),
+};
