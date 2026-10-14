@@ -22,6 +22,7 @@ REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 RAW_DIR: Path = REPO_ROOT / "data" / "raw" / "completejourney"
 BRONZE_DIR: Path = REPO_ROOT / "data" / "processed" / "bronze"
 SILVER_DIR: Path = REPO_ROOT / "data" / "processed" / "silver"
+GOLD_DIR: Path = REPO_ROOT / "data" / "processed" / "gold"
 SHA256SUMS_FILE: Path = RAW_DIR / "SHA256SUMS.txt"
 
 # ---------------------------------------------------------------------------
@@ -33,6 +34,20 @@ REVENUE_ANCHOR_USD: float = 4_596_039.58
 # 0,01 absorve ruído de ponto flutuante na soma de ~1,47M linhas sem mascarar
 # qualquer fan-out (que erraria por milhares de dólares).
 REVENUE_ANCHOR_TOL_USD: float = 0.01
+
+# Âncoras de contagem (grão da fato e agregados), ver docs/metrics.md §0.
+BASKET_ANCHOR: int = 155_848  # cestas distintas (COUNT DISTINCT basket_id)
+LINE_ANCHOR: int = 1_469_307  # linhas item-de-linha (= SUM(n_items) em fct_basket)
+HOUSEHOLD_UNIVERSE: int = 2_469  # domicílios distintos (todos com >= 1 cesta)
+
+# Data de referência (as-of) FIXA para recência — a máxima data observada.
+# NUNCA a data atual do computador (CLAUDE.md regra 8 / metrics.md §0).
+AS_OF_DATE: str = "2018-01-01"
+# Janela observada das transações (fronteiras de mês para a base de atividade).
+# A fato vai até 2018-01-01 04:01:20 (fim da semana 53) => há um mês-fronteira
+# parcial 2018-01 (sliver de 77 domicílios que compraram em 01/01/2018).
+DATA_WINDOW_START: str = "2017-01-01"
+DATA_WINDOW_END: str = "2018-01-01"
 
 
 @dataclass(frozen=True)
