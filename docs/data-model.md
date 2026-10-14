@@ -97,16 +97,41 @@ Métricas derivadas permitidas a partir da fato (mesmo grão, sem novos joins de
 - Tabelas pesadas (`transactions` 1,47M, `promotions` 20,9M) → Parquet particionado por `week` para leitura eficiente.
 - Idempotente: reexecutar com o mesmo input produz o mesmo output (mesmo hash de conteúdo).
 
-### Silver (tipagem, limpeza, integridade) — decisões a documentar
-- **Tipos:** IDs → string; monetários → decimal/float; datas → date/timestamp; categóricos → category com domínio validado contra os valores observados (ver dicionário).
-- **Decisões de limpeza (candidatas, discutir antes de cravar):**
-  - `coupons`: **deduplicar** (4.872 linhas idênticas; 10.942 dups em `(coupon_upc, product_id)`).
-  - `products`: 17 `product_id` de transactions ausentes → criar membro "produto desconhecido" ou flag de órfão; **não descartar a receita** da linha.
-  - `transactions`: marcar (não remover) linhas atípicas — `quantity=0` (8.869), `sales_value=0` (11.226, itens grátis/promo), `quantity>1000` (13.494, itens por peso). Decidir política de inclusão por métrica, não globalmente.
-  - `demographics`: manter nulos reais (`home_ownership` 29%, `marital_status` 17%) como categoria "Unknown"; **sinalizar cobertura de 32%** para toda segmentação (viés).
-  - Normalizar `week` ↔ `transaction_timestamp` e padronizar fuso (timestamps são naïve, grão de segundo).
-- **Integridade referencial:** validar FKs (`product_id`, `household_id`, `campaign_id`, `coupon_upc`) via asset checks; registrar órfãos em vez de falhar silenciosamente.
-- Rotular explicitamente colunas **derivadas** (ex. `list_value`) vs originais.
+### Silver (tipagem, limpeza, integridade) — **IMPLEMENTADA** (2026-10-14)
+Materializada em `data/processed/silver/<tabela>/` (mesmo particionamento por
+`week` da Bronze). Preserva **todas as linhas** (marca, não remove) exceto o
+dedupe exato de `coupons`. Colunas de auditoria Bronze **não** são propagadas;
+derivadas são rotuladas (`is_*`, `has_demographics`). Código:
+`pipelines/crm_pipelines/silver.py` + `silver_config.py`.
+- **Tipos:** IDs → string; monetários (`sales_value`, `retail_disc`,
+  `coupon_disc`, `coupon_match_disc`) → **`DECIMAL(12,2)`** (todos os valores têm
+  exatamente 2 casas; o total de receita permanece **US$ 4.596.039,58** exato —
+  validado pelo check `revenue_preserved`); `transaction_timestamp` → timestamp;
+  `week` → integer; categóricos validados contra o domínio observado (check
+  `categorical_domains_valid`).
+- **Decisões de limpeza aplicadas (aprovadas pelo usuário):**
+  - `coupons`: **dedupe exato** por `(coupon_upc, product_id, campaign_id)` →
+    116.204 → **111.332** linhas (remove as 4.872 duplicatas idênticas).
+  - `products` órfãos: 17 `product_id` de transactions sem cadastro → flag
+    `is_orphan_product` em `silver.transactions` (4.836 linhas). A linha de venda
+    e sua receita são **mantidas**; nenhum membro sintético é criado (evita
+    inventar `brand`/`department`). Gold resolve o desconhecido no join.
+  - `transactions`: flags booleanas (não remove) — `is_zero_qty` (8.869),
+    `is_free_item` (11.226), `is_weighted` (13.494, itens por peso). Política de
+    inclusão por métrica fica no Gold.
+  - `demographics`: `home_ownership` (233) e `marital_status` (137) nulos →
+    `'Unknown'`; coluna `has_demographics` (nesta tabela sempre `TRUE`). **Viés
+    de cobertura: 801 de 2.469 domicílios (32,4%)** — a flag de cobertura sobre o
+    universo completo de domicílios é materializada no Gold (`dim_household`).
+- **Integridade referencial:** asset checks `fk_*` de severidade **WARN** que
+  **registram** a contagem de órfãos como metadado e **não** quebram o pipeline
+  (órfãos conhecidos: `transactions.product_id` 17, `coupons.product_id` 6).
+  `household_id` não tem tabela-mestre (2.469 domicílios sem dimensão própria) →
+  sem check de FK; `demographics` é cobertura parcial por design, não violação.
+- **Chaves duplicadas:** check `primary_key_unique` (ERROR) nas PKs naturais
+  limpas (transactions, products, coupons, campaigns, campaign_descriptions,
+  demographics). `coupon_redemptions` é evento sem PK natural; `promotions` tem
+  grão composto de 5 colunas (unicidade validada na inspeção Bronze).
 
 ### Gold (visões analíticas prontas para a API, grão explícito)
 Cada tabela/visão declara seu grão. Receita sempre pré-agregada da fato. Candidatas:

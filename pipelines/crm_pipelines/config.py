@@ -21,6 +21,7 @@ from pathlib import Path
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 RAW_DIR: Path = REPO_ROOT / "data" / "raw" / "completejourney"
 BRONZE_DIR: Path = REPO_ROOT / "data" / "processed" / "bronze"
+SILVER_DIR: Path = REPO_ROOT / "data" / "processed" / "silver"
 SHA256SUMS_FILE: Path = RAW_DIR / "SHA256SUMS.txt"
 
 # ---------------------------------------------------------------------------
