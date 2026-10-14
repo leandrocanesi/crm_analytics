@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crm-pipelines"
+version = "0.1.0"
+description = "Customer Intelligence Lab — Dagster pipelines (Bronze/Silver/Gold)."
+requires-python = ">=3.13"
+dependencies = [
+    "dagster==1.13.26",
+    "dagster-webserver==1.13.26",
+    "duckdb>=1.1",
+    "pyreadr>=0.5",
+    "pandas>=2.2",
+    "pyarrow>=16",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.6", "pytest>=8"]
+
+[tool.setuptools]
+packages = ["crm_pipelines"]
+
+[tool.dagster]
+module_name = "crm_pipelines"
+code_location_name = "crm_pipelines"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
