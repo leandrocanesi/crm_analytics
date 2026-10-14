@@ -53,6 +53,8 @@ GOLD_SNAPSHOT_TABLES: tuple[str, ...] = (
     "agg_weekly_revenue",
     "agg_household_rfm",
     "agg_household_activity_month",
+    "agg_retention_monthly",
+    "agg_cohort_retention",
 )
 
 # Nome da tabela técnica de metadados dentro do .duckdb.
@@ -95,7 +97,7 @@ class SnapshotCheck:
         return abs(observed - self.expected) <= self.tol
 
 
-# Presença + não-vazio das 4 tabelas (SELECT COUNT(*) ... >= 1). Se a tabela não
+# Presença + não-vazio de cada tabela (SELECT COUNT(*) ... >= 1). Se a tabela não
 # existir, a query lança e a validação falha — exatamente o que queremos (gate).
 _PRESENCE_CHECKS: tuple[SnapshotCheck, ...] = tuple(
     SnapshotCheck(

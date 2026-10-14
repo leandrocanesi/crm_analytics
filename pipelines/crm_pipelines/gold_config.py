@@ -76,6 +76,25 @@ class ViolationCheck:
 
 
 @dataclass(frozen=True)
+class IntegrityCheck:
+    """Check de integridade **cross-table**: roda um SQL que retorna um único
+    inteiro (o nº de violações) e passa (ERROR) se esse inteiro for 0.
+
+    Diferente de :class:`ReconcileCheck`/:class:`ViolationCheck` (que só enxergam a
+    própria tabela Gold), ``count_sql`` pode cruzar a tabela recém-gravada com as
+    suas fontes de montante. Usa os MESMOS placeholders que ``transform_sql``:
+      - ``{this}``            — a própria tabela Gold (o Parquet já persistido);
+      - ``{gold_<t>}`` / ``{silver_<t>}`` — as fontes declaradas em ``*_deps``.
+    Serve para provar, p.ex., que ``active_households`` de cada mês da retenção
+    bate com o COUNT(DISTINCT household) ativo na base de atividade.
+    """
+
+    name: str
+    description: str
+    count_sql: str
+
+
+@dataclass(frozen=True)
 class GoldSpec:
     """Especificação de uma tabela Gold (transformação + validações)."""
 
@@ -88,6 +107,7 @@ class GoldSpec:
     gold_deps: tuple[str, ...] = field(default_factory=tuple)
     reconcile_checks: tuple[ReconcileCheck, ...] = field(default_factory=tuple)
     violation_checks: tuple[ViolationCheck, ...] = field(default_factory=tuple)
+    integrity_checks: tuple[IntegrityCheck, ...] = field(default_factory=tuple)
     description: str = ""
 
     @property
@@ -198,6 +218,95 @@ SELECT
 FROM {gold_fct_basket}
 GROUP BY household_id, date_trunc('month', transaction_timestamp)::date
 ORDER BY household_id, activity_month
+"""
+
+# 5) agg_retention_monthly — grão MÊS M de ORIGEM (retenção período-a-período,
+#    PRIMÁRIA, metrics.md §6.2). Para cada mês M: ativos em M (denominador) e
+#    quantos desses também compraram em M+1 (numerador). "Ativo" = >= 1 cesta no
+#    mês (consistente com §2). A base já está no grão domicílio × mês ativo, logo
+#    um LEFT JOIN da base contra ela mesma deslocada de 1 mês dá a retenção; o
+#    COUNT(DISTINCT n.household_id) só conta quem reaparece em M+1 (idempotente).
+#    DECISÃO de fronteira: M = 2018-01 é OMITIDO como origem — seu M+1 (2018-02)
+#    não é observável, então a taxa seria espúria. Mantemos 12 linhas de origem
+#    (2017-01 .. 2017-12). A última (2017-12 -> 2018-01) usa o mês-fronteira
+#    PARCIAL 2018-01 como M+1 e é marcada com next_month_partial = TRUE para a UI
+#    sinalizar que a taxa está subestimada (não é churn real, é fim da janela).
+_SQL_AGG_RETENTION_MONTHLY = """
+WITH monthly AS (
+    -- grão já é domicílio × mês ativo; DISTINCT é defensivo (não altera o grão).
+    SELECT DISTINCT household_id, activity_month
+    FROM {gold_agg_household_activity_month}
+),
+origin AS (
+    SELECT
+        m.activity_month,
+        COUNT(DISTINCT m.household_id) AS active_households,     -- denominador (ativos em M)
+        COUNT(DISTINCT n.household_id) AS retained_next_month    -- numerador (ativos em M e M+1)
+    FROM monthly m
+    LEFT JOIN monthly n
+        ON  n.household_id   = m.household_id
+        AND n.activity_month = m.activity_month + INTERVAL 1 MONTH
+    -- M+1 precisa ser observável: 2018-01 como origem teria M+1 = 2018-02 (vazio).
+    WHERE m.activity_month < DATE '2018-01-01'
+    GROUP BY m.activity_month
+)
+SELECT
+    activity_month,
+    active_households,
+    retained_next_month,
+    retained_next_month::DOUBLE / active_households AS retention_rate,
+    (activity_month + INTERVAL 1 MONTH) = DATE '2018-01-01' AS next_month_partial
+FROM origin
+ORDER BY activity_month
+"""
+
+# 6) agg_cohort_retention — grão COORTE × MÊS-DE-ATIVIDADE (retenção por coorte,
+#    SECUNDÁRIA/DIDÁTICA, metrics.md §6.3). coorte = mês da PRIMEIRA cesta
+#    OBSERVADA do domicílio dentro da janela.
+#    *** LEFT-CENSORING (armadilha central, §6.3): cohort_month é "primeira
+#    aparição na janela", NÃO a aquisição real do cliente. Como os dados começam
+#    em 2017-01, a maioria dos domicílios cai na coorte de janeiro só porque é
+#    onde a janela abre — não porque foram adquiridos ali. NÃO ler a coorte de
+#    janeiro como "novos de janeiro". ***
+#    Cada domicílio pertence a EXATAMENTE UMA coorte (MIN(activity_month) por
+#    household => partição do universo). months_since = 0 é o próprio mês da coorte
+#    e, por definição, tem retenção = 1,0. O mês-fronteira 2018-01 (parcial)
+#    aparece como o último months_since de cada coorte com taxa subestimada.
+_SQL_AGG_COHORT_RETENTION = """
+WITH monthly AS (
+    SELECT DISTINCT household_id, activity_month
+    FROM {gold_agg_household_activity_month}
+),
+first_seen AS (
+    -- coorte do domicílio = mês da sua primeira aparição na janela (left-censored).
+    SELECT household_id, MIN(activity_month) AS cohort_month
+    FROM monthly
+    GROUP BY household_id
+),
+cohort_sizes AS (
+    SELECT cohort_month, COUNT(*) AS cohort_size
+    FROM first_seen
+    GROUP BY cohort_month
+),
+activity AS (
+    SELECT
+        f.cohort_month,
+        m.activity_month,
+        COUNT(DISTINCT m.household_id) AS active_households
+    FROM monthly m
+    JOIN first_seen f USING (household_id)
+    GROUP BY f.cohort_month, m.activity_month
+)
+SELECT
+    a.cohort_month,
+    a.activity_month,
+    DATEDIFF('month', a.cohort_month, a.activity_month) AS months_since,
+    c.cohort_size,
+    a.active_households,
+    a.active_households::DOUBLE / c.cohort_size AS retention_rate
+FROM activity a
+JOIN cohort_sizes c USING (cohort_month)
+ORDER BY a.cohort_month, a.activity_month
 """
 
 
@@ -380,6 +489,117 @@ GOLD_SPECS: tuple[GoldSpec, ...] = (
                 name="activity_counts_positive",
                 description="Todo par domicílio×mês ativo tem >= 1 cesta.",
                 where_expr="n_baskets < 1",
+            ),
+        ),
+    ),
+    GoldSpec(
+        name="agg_retention_monthly",
+        transform_sql=_SQL_AGG_RETENTION_MONTHLY,
+        grain="1 mês de origem M (activity_month)",
+        grain_columns=("activity_month",),
+        # 13 meses observados [2017-01 .. 2018-01]; 2018-01 é omitido como origem
+        # (M+1 não observável) => 12 linhas de origem (2017-01 .. 2017-12).
+        expected_rows=12,
+        gold_deps=("agg_household_activity_month",),
+        description=(
+            "Retenção período-a-período mensal (PRIMÁRIA, metrics.md §6.2): por mês "
+            "M, active_households (ativos em M), retained_next_month (ativos em M e "
+            "M+1) e retention_rate = num/denom. 'Ativo' = >= 1 cesta no mês. M = "
+            "2018-01 é omitido como origem (M+1 não observável); a linha 2017-12 usa "
+            "o mês parcial 2018-01 como M+1 e é marcada com next_month_partial=TRUE "
+            "(taxa subestimada pelo fim da janela, não churn real). Observacional: "
+            "retenção != efeito de CRM (correlação != causalidade)."
+        ),
+        violation_checks=(
+            ViolationCheck(
+                name="retention_rate_in_unit_interval",
+                description="Toda retention_rate em [0, 1].",
+                where_expr="retention_rate < 0 OR retention_rate > 1",
+            ),
+            ViolationCheck(
+                name="retained_le_active",
+                description="retained_next_month <= active_households em toda linha.",
+                where_expr="retained_next_month > active_households",
+            ),
+            ViolationCheck(
+                name="active_households_positive",
+                description="Todo mês de origem tem >= 1 domicílio ativo.",
+                where_expr="active_households < 1",
+            ),
+        ),
+        integrity_checks=(
+            IntegrityCheck(
+                name="active_households_matches_base",
+                description=(
+                    "active_households de cada mês bate com COUNT(DISTINCT household) "
+                    "ativo naquele mês em agg_household_activity_month."
+                ),
+                # Conta meses cujo denominador diverge da base de atividade (deve ser 0).
+                count_sql="""
+                    SELECT COUNT(*) FROM {this} r
+                    WHERE r.active_households <> (
+                        SELECT COUNT(DISTINCT a.household_id)
+                        FROM {gold_agg_household_activity_month} a
+                        WHERE a.activity_month = r.activity_month
+                    )
+                """,
+            ),
+        ),
+    ),
+    GoldSpec(
+        name="agg_cohort_retention",
+        transform_sql=_SQL_AGG_COHORT_RETENTION,
+        grain="1 coorte × mês de atividade (cohort_month, activity_month)",
+        grain_columns=("cohort_month", "activity_month"),
+        # Triângulo de coorte sobre a janela observada; conferido por prototipagem
+        # real em 2026-10-14 (12 coortes, 2017-01 .. 2017-12).
+        expected_rows=84,
+        gold_deps=("agg_household_activity_month",),
+        description=(
+            "Retenção por coorte (SECUNDÁRIA/DIDÁTICA, metrics.md §6.3). coorte = "
+            "mês da PRIMEIRA cesta OBSERVADA do domicílio. *** LEFT-CENSORING: "
+            "cohort_month é 'primeira aparição na janela', NÃO a aquisição real — a "
+            "coorte de 2017-01 inchada é artefato do início dos dados, não 'novos "
+            "de janeiro'. *** Cada domicílio em exatamente 1 coorte; months_since=0 "
+            "tem retenção 1,0 por definição; o mês parcial 2018-01 subestima a última "
+            "coluna de cada coorte (right-censoring). Observacional: sem causalidade."
+        ),
+        violation_checks=(
+            ViolationCheck(
+                name="retention_rate_in_unit_interval",
+                description="Toda retention_rate em [0, 1].",
+                where_expr="retention_rate < 0 OR retention_rate > 1",
+            ),
+            ViolationCheck(
+                name="months_since_non_negative",
+                description="months_since >= 0 (atividade nunca antes da coorte).",
+                where_expr="months_since < 0",
+            ),
+            ViolationCheck(
+                name="active_le_cohort_size",
+                description="active_households <= cohort_size em toda linha.",
+                where_expr="active_households > cohort_size",
+            ),
+            ViolationCheck(
+                name="m0_is_full_retention",
+                description="No mês da coorte (months_since=0) a retenção é 1,0 por definição.",
+                where_expr="months_since = 0 AND retention_rate <> 1",
+            ),
+        ),
+        integrity_checks=(
+            IntegrityCheck(
+                name="cohorts_partition_universe",
+                description=(
+                    "Soma dos cohort_size distintos por coorte == 2.469 (cada "
+                    "domicílio em exatamente 1 coorte; união das coortes = universo)."
+                ),
+                # Retorna 1 (violação) se a soma das coortes não cobrir o universo.
+                count_sql=f"""
+                    SELECT COUNT(*) FROM (
+                        SELECT SUM(cohort_size) AS total
+                        FROM (SELECT DISTINCT cohort_month, cohort_size FROM {{this}})
+                    ) WHERE total <> {HOUSEHOLD_UNIVERSE}
+                """,
             ),
         ),
     ),

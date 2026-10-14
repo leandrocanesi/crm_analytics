@@ -68,3 +68,41 @@ export function formatAsOfDate(isoDate: string): string {
   const [, year, month, day] = match;
   return `${day}/${month}/${year}`;
 }
+
+const MONTH_ABBR_PT = [
+  "jan",
+  "fev",
+  "mar",
+  "abr",
+  "mai",
+  "jun",
+  "jul",
+  "ago",
+  "set",
+  "out",
+  "nov",
+  "dez",
+];
+
+/**
+ * Mês/ano abreviado a partir de ISO "YYYY-MM-01". Ex.: "2017-04-01" -> "abr/17".
+ * Sem fuso (parse manual da string) para não deslocar o mês.
+ */
+export function formatMonthShort(isoDate: string): string {
+  const match = /^(\d{4})-(\d{2})/.exec(isoDate);
+  if (!match) return isoDate;
+  const year = match[1]!;
+  const month = match[2]!;
+  const abbr = MONTH_ABBR_PT[Number(month) - 1] ?? month;
+  return `${abbr}/${year.slice(2)}`;
+}
+
+/** Mês/ano completo a partir de ISO. Ex.: "2017-04-01" -> "abr/2017". */
+export function formatMonthYear(isoDate: string): string {
+  const match = /^(\d{4})-(\d{2})/.exec(isoDate);
+  if (!match) return isoDate;
+  const year = match[1]!;
+  const month = match[2]!;
+  const abbr = MONTH_ABBR_PT[Number(month) - 1] ?? month;
+  return `${abbr}/${year}`;
+}

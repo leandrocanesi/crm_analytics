@@ -211,3 +211,112 @@ class RfmHouseholdsResponse(BaseModel):
         description="Página de domicílios, ordenada conforme sort_by/order."
     )
     note: str = Field(default=SAMPLE_NOTE, description="Escopo da receita (amostra).")
+
+
+# --- Retenção (metrics.md §6) --------------------------------------------------
+# Tudo aqui é OBSERVACIONAL: mede a cadência natural da amostra, não o efeito de
+# nenhuma ação de CRM. Correlação ≠ causalidade (CLAUDE.md regra 9).
+
+# Ressalva do mês-fronteira parcial para a retenção mensal (metrics.md §6.2).
+RETENTION_MONTHLY_NOTE = (
+    "Retenção mês-a-mês OBSERVACIONAL (metrics.md §6.2): % de domicílios ativos no "
+    "mês M que voltam a comprar em M+1. A ÚLTIMA linha (2017-12 → 2018-01) é "
+    "subestimada pelo mês-fronteira parcial: 2018-01 tem só os primeiros dias do "
+    "dataset (next_month_partial=true), então a queda NÃO é churn real. "
+    "Correlação ≠ causalidade: isto não mede o efeito de nenhuma ação de CRM."
+)
+
+# Ressalva de left-censoring para as coortes (metrics.md §6.3).
+RETENTION_COHORTS_NOTE = (
+    "Coorte de retenção OBSERVACIONAL (metrics.md §6.3). LEFT-CENSORING: "
+    "cohort_month = mês da PRIMEIRA aparição do domicílio NA JANELA de dados, NÃO a "
+    "aquisição real do cliente. O dataset começa em 2017-01, então a coorte de "
+    "janeiro concentra os já-clientes visíveis no início — não são 'novos de "
+    "janeiro'. Coortes tardias têm menos meses para maturar (right-censoring): não "
+    "compare M12 entre coortes. Correlação ≠ causalidade."
+)
+
+
+class RetentionMonthlyPoint(BaseModel):
+    """Um mês da série de retenção período-a-período (grão = mês de atividade)."""
+
+    activity_month: str = Field(
+        description="Mês de atividade M (ISO date, 1º dia do mês: YYYY-MM-DD)."
+    )
+    active_households: int = Field(
+        description="Domicílios ativos em M (>= 1 cesta; denominador da taxa)."
+    )
+    retained_next_month: int = Field(
+        description="Domicílios ativos em M que também compraram em M+1 (numerador)."
+    )
+    retention_rate: float = Field(
+        description="retained_next_month / active_households (0..1)."
+    )
+    next_month_partial: bool = Field(
+        description=(
+            "True só em 2017-12: M+1 (2018-01) é o mês-fronteira PARCIAL do dataset, "
+            "logo a taxa subestima e NÃO é churn real."
+        )
+    )
+
+
+class RetentionMonthlyResponse(BaseModel):
+    """Série mensal de retenção para o Overview (metrics.md §6.2)."""
+
+    as_of_date: str = Field(description="Data de referência (as-of) do dataset.")
+    n_months: int = Field(description="Nº de meses na série (esperado 12).")
+    series: list[RetentionMonthlyPoint] = Field(
+        description="Pontos ordenados por activity_month (asc)."
+    )
+    note: str = Field(
+        default=RETENTION_MONTHLY_NOTE,
+        description="Ressalva do mês-fronteira parcial + aviso observacional.",
+    )
+
+
+class CohortRetentionPoint(BaseModel):
+    """Um ponto do triângulo de coorte (mês de atividade dentro de uma coorte)."""
+
+    months_since: int = Field(
+        description="Meses decorridos desde o mês da coorte (0 = o próprio mês)."
+    )
+    activity_month: str = Field(
+        description="Mês de atividade medido (ISO date: YYYY-MM-DD)."
+    )
+    active_households: int = Field(
+        description="Domicílios da coorte ativos neste mês de atividade."
+    )
+    retention_rate: float = Field(
+        description="active_households / cohort_size (0..1; é 1.0 em months_since=0)."
+    )
+
+
+class CohortRetention(BaseModel):
+    """Uma coorte (domicílios pela primeira aparição na janela) e seu triângulo."""
+
+    cohort_month: str = Field(
+        description=(
+            "Mês da PRIMEIRA aparição na janela (ISO date). NÃO é aquisição real "
+            "(left-censoring — ver note)."
+        )
+    )
+    cohort_size: int = Field(
+        description="Nº de domicílios na coorte (constante; base da taxa)."
+    )
+    points: list[CohortRetentionPoint] = Field(
+        description="Triângulo da coorte, ordenado por months_since (asc)."
+    )
+
+
+class RetentionCohortsResponse(BaseModel):
+    """Triângulo de coortes de retenção para a página de retenção (metrics.md §6.3)."""
+
+    as_of_date: str = Field(description="Data de referência (as-of) do dataset.")
+    n_cohorts: int = Field(description="Nº de coortes distintas (esperado 12).")
+    cohorts: list[CohortRetention] = Field(
+        description="Coortes ordenadas por cohort_month (asc)."
+    )
+    note: str = Field(
+        default=RETENTION_COHORTS_NOTE,
+        description="Ressalva de left/right-censoring + aviso observacional.",
+    )

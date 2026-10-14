@@ -171,3 +171,107 @@ def test_activity_month_grain_and_revenue() -> None:
     ).fetchone()
     assert row[0] == row[1]  # grão único
     assert float(row[2]) == pytest.approx(REVENUE_ANCHOR_USD, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Retenção (§6). Os agregados de retenção dependem de
+# agg_household_activity_month materializado em disco (gold_dep).
+# ---------------------------------------------------------------------------
+_ACTIVITY_PARQUET = (
+    GOLD_DIR / "agg_household_activity_month" / "agg_household_activity_month.parquet"
+)
+_needs_activity_month = pytest.mark.skipif(
+    not _ACTIVITY_PARQUET.exists(),
+    reason="gold.agg_household_activity_month ainda não materializado.",
+)
+
+
+@_needs_activity_month
+def test_retention_monthly_bounds_and_shape() -> None:
+    """agg_retention_monthly: 12 meses de origem, taxa em [0,1], numerador <= denom."""
+    con = duckdb.connect()
+    sql = _resolve_transform_sql(GOLD_SPECS_BY_NAME["agg_retention_monthly"])
+    row = con.execute(
+        f"""SELECT
+                COUNT(*),
+                MIN(retention_rate), MAX(retention_rate),
+                SUM(CASE WHEN retained_next_month > active_households THEN 1 ELSE 0 END),
+                SUM(CASE WHEN next_month_partial THEN 1 ELSE 0 END),
+                MAX(activity_month)
+            FROM ({sql})"""
+    ).fetchone()
+    assert row[0] == 12  # 2017-01 .. 2017-12 (2018-01 omitido como origem)
+    assert row[1] >= 0.0 and row[2] <= 1.0  # taxa em [0,1]
+    assert row[3] == 0  # numerador nunca excede o denominador
+    assert row[4] == 1  # exatamente 1 linha marcada como next_month_partial
+    assert str(row[5]) == "2017-12-01"  # última origem é dezembro, não 2018-01
+
+
+@_needs_activity_month
+def test_retention_monthly_denominator_matches_base() -> None:
+    """active_households de cada mês bate com a base de atividade (integridade)."""
+    con = duckdb.connect()
+    ret = _resolve_transform_sql(GOLD_SPECS_BY_NAME["agg_retention_monthly"])
+    base = _resolve_transform_sql(GOLD_SPECS_BY_NAME["agg_household_activity_month"])
+    mismatches = con.execute(
+        f"""
+        WITH r AS ({ret}),
+             b AS (
+                SELECT activity_month, COUNT(DISTINCT household_id) AS active
+                FROM ({base}) GROUP BY activity_month
+             )
+        SELECT COUNT(*) FROM r JOIN b USING (activity_month)
+        WHERE r.active_households <> b.active
+        """
+    ).fetchone()[0]
+    assert mismatches == 0
+
+
+@_needs_activity_month
+def test_retention_monthly_known_value_jan_to_feb() -> None:
+    """Valor conhecido (prototipado): 2017-01 -> 1982 ativos, 1761 retidos."""
+    con = duckdb.connect()
+    sql = _resolve_transform_sql(GOLD_SPECS_BY_NAME["agg_retention_monthly"])
+    row = con.execute(
+        f"""SELECT active_households, retained_next_month, round(retention_rate, 4)
+            FROM ({sql}) WHERE activity_month = DATE '2017-01-01'"""
+    ).fetchone()
+    assert row[0] == 1982
+    assert row[1] == 1761
+    assert float(row[2]) == pytest.approx(1761 / 1982, abs=1e-4)
+
+
+@_needs_activity_month
+def test_cohort_retention_partition_and_bounds() -> None:
+    """agg_cohort_retention: 1 coorte por domicílio (soma = universo), taxa em [0,1]."""
+    con = duckdb.connect()
+    sql = _resolve_transform_sql(GOLD_SPECS_BY_NAME["agg_cohort_retention"])
+    con.execute(f"CREATE TABLE coh AS {sql}")
+    # União das coortes == universo (cada domicílio em exatamente 1 coorte).
+    total = con.execute(
+        "SELECT SUM(cohort_size) FROM (SELECT DISTINCT cohort_month, cohort_size FROM coh)"
+    ).fetchone()[0]
+    assert total == HOUSEHOLD_UNIVERSE
+    # Taxa em [0,1], months_since >= 0, e M0 sempre retenção total.
+    bad = con.execute(
+        """SELECT COUNT(*) FROM coh
+           WHERE retention_rate < 0 OR retention_rate > 1
+              OR months_since < 0
+              OR (months_since = 0 AND retention_rate <> 1)"""
+    ).fetchone()[0]
+    assert bad == 0
+
+
+@_needs_activity_month
+def test_cohort_retention_left_censoring_visible() -> None:
+    """Left-censoring: a coorte 2017-01 concentra a maioria (artefato do início)."""
+    con = duckdb.connect()
+    sql = _resolve_transform_sql(GOLD_SPECS_BY_NAME["agg_cohort_retention"])
+    jan_size = con.execute(
+        f"""SELECT DISTINCT cohort_size FROM ({sql})
+            WHERE cohort_month = DATE '2017-01-01'"""
+    ).fetchone()[0]
+    # A coorte de janeiro = 1982 domicílios (80% do universo) — NÃO são 'novos de
+    # janeiro', é onde a janela abre. Documenta a armadilha do left-censoring.
+    assert jan_size == 1982
+    assert jan_size > HOUSEHOLD_UNIVERSE * 0.5

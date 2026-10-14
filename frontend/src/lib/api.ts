@@ -131,6 +131,51 @@ export const rfmHouseholdsSchema = z.object({
   note: z.string(),
 });
 
+// ---------------------------------------------------------------------------
+// Retenção (espelha GET /retention/monthly e /retention/cohorts)
+// ---------------------------------------------------------------------------
+
+export const retentionMonthlyPointSchema = z.object({
+  /** Mês de atividade, ISO "YYYY-MM-01". */
+  activity_month: z.string(),
+  active_households: z.number(),
+  retained_next_month: z.number(),
+  /** Fração 0..1 (não %). */
+  retention_rate: z.number(),
+  /** true só no mês-fronteira (2017-12 → 2018-01 parcial): não é churn real. */
+  next_month_partial: z.boolean(),
+});
+
+export const retentionMonthlySchema = z.object({
+  as_of_date: z.string(),
+  n_months: z.number(),
+  series: z.array(retentionMonthlyPointSchema),
+  note: z.string(),
+});
+
+export const cohortPointSchema = z.object({
+  /** Meses desde o mês da coorte (0 = mês base). */
+  months_since: z.number(),
+  activity_month: z.string(),
+  active_households: z.number(),
+  retention_rate: z.number(),
+});
+
+export const cohortSchema = z.object({
+  /** Mês da PRIMEIRA aparição na janela (não aquisição real — ver left-censoring). */
+  cohort_month: z.string(),
+  cohort_size: z.number(),
+  /** Nº de pontos VARIÁVEL por coorte (coortes tardias maturam menos). */
+  points: z.array(cohortPointSchema),
+});
+
+export const retentionCohortsSchema = z.object({
+  as_of_date: z.string(),
+  n_cohorts: z.number(),
+  cohorts: z.array(cohortSchema),
+  note: z.string(),
+});
+
 export type Health = z.infer<typeof healthSchema>;
 export type Meta = z.infer<typeof metaSchema>;
 export type Overview = z.infer<typeof overviewSchema>;
@@ -140,6 +185,11 @@ export type RfmSegment = z.infer<typeof rfmSegmentSchema>;
 export type RfmSegments = z.infer<typeof rfmSegmentsSchema>;
 export type RfmHousehold = z.infer<typeof rfmHouseholdSchema>;
 export type RfmHouseholds = z.infer<typeof rfmHouseholdsSchema>;
+export type RetentionMonthlyPoint = z.infer<typeof retentionMonthlyPointSchema>;
+export type RetentionMonthly = z.infer<typeof retentionMonthlySchema>;
+export type CohortPoint = z.infer<typeof cohortPointSchema>;
+export type Cohort = z.infer<typeof cohortSchema>;
+export type RetentionCohorts = z.infer<typeof retentionCohortsSchema>;
 
 /** Parâmetros aceitos por GET /rfm/households (todos opcionais). */
 export interface RfmHouseholdsParams {
@@ -264,4 +314,8 @@ export const api = {
       `/rfm/households${buildRfmHouseholdsQuery(params)}`,
       rfmHouseholdsSchema,
     ),
+  getRetentionMonthly: () =>
+    request("/retention/monthly", retentionMonthlySchema),
+  getRetentionCohorts: () =>
+    request("/retention/cohorts", retentionCohortsSchema),
 };

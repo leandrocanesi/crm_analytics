@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 
 from .config import get_settings
 from .deps import get_snapshot
-from .routers import health, meta, overview, revenue, rfm
+from .routers import health, meta, overview, retention, revenue, rfm
 from .schemas import ErrorResponse
 from .snapshot import SnapshotUnavailableError
 
@@ -63,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(overview.router)
     app.include_router(revenue.router)
     app.include_router(rfm.router)
+    app.include_router(retention.router)
     return app
 
 

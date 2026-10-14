@@ -8,13 +8,16 @@ frações (share) dos segmentos. Nada é recalculado a partir do grão de linha.
 
 from __future__ import annotations
 
+import datetime as dt
 from decimal import Decimal
 from typing import Any
 
 from .config import Settings
 from .queries import (
+    COHORT_RETENTION,
     META,
     OVERVIEW,
+    RETENTION_MONTHLY,
     RFM_HOUSEHOLDS,
     RFM_HOUSEHOLDS_COUNT,
     RFM_SEGMENTS,
@@ -23,8 +26,13 @@ from .queries import (
     WEEKLY_REVENUE,
 )
 from .schemas import (
+    CohortRetention,
+    CohortRetentionPoint,
     MetaResponse,
     OverviewResponse,
+    RetentionCohortsResponse,
+    RetentionMonthlyPoint,
+    RetentionMonthlyResponse,
     RfmHousehold,
     RfmHouseholdsResponse,
     RfmSegment,
@@ -49,6 +57,19 @@ def _f(value: Any) -> float:
 def _money(value: Any) -> float:
     """Float monetário arredondado a 2 casas (centavos)."""
     return round(_f(value), 2)
+
+
+def _isodate(value: Any) -> str:
+    """Converte DATE do DuckDB (``datetime.date``) para string ISO 'YYYY-MM-DD'."""
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value.isoformat()[:10]
+    # Fallback defensivo: já veio como string ISO.
+    return str(value)[:10]
+
+
+def _rate(value: Any) -> float:
+    """Taxa de retenção em [0,1], arredondada a 4 casas (o Gold já garante o range)."""
+    return round(_f(value), 4)
 
 
 def build_meta(snap: SnapshotManager, settings: Settings) -> MetaResponse:
@@ -194,4 +215,68 @@ def build_rfm_households(  # noqa: PLR0913 — filtro + paginação + ordenaçã
         offset=offset,
         segment=segment,
         households=households,
+    )
+
+
+def build_retention_monthly(
+    snap: SnapshotManager, settings: Settings
+) -> RetentionMonthlyResponse:
+    """Série mensal de retenção período-a-período (metrics.md §6.2).
+
+    Só expõe o que o Gold já calculou (``agg_retention_monthly``); nada é
+    recalculado aqui. A query já vem ordenada por ``activity_month`` ASC.
+    """
+    rows = snap.query(RETENTION_MONTHLY)
+    series = [
+        RetentionMonthlyPoint(
+            activity_month=_isodate(r["activity_month"]),
+            active_households=int(r["active_households"]),
+            retained_next_month=int(r["retained_next_month"]),
+            retention_rate=_rate(r["retention_rate"]),
+            next_month_partial=bool(r["next_month_partial"]),
+        )
+        for r in rows
+    ]
+    return RetentionMonthlyResponse(
+        as_of_date=settings.as_of_date,
+        n_months=len(series),
+        series=series,
+    )
+
+
+def build_retention_cohorts(
+    snap: SnapshotManager, settings: Settings
+) -> RetentionCohortsResponse:
+    """Triângulo de coortes de retenção (metrics.md §6.3).
+
+    A query traz 84 linhas (coorte × mês) já ordenadas por ``cohort_month`` ASC e
+    ``months_since`` ASC; aqui só montamos a estrutura aninhada por coorte. Cada
+    coorte aparece uma vez (ordem de primeira ocorrência = ordem da query).
+    """
+    rows = snap.query(COHORT_RETENTION)
+    cohorts: list[CohortRetention] = []
+    by_month: dict[str, CohortRetention] = {}
+    for r in rows:
+        cohort_key = _isodate(r["cohort_month"])
+        cohort = by_month.get(cohort_key)
+        if cohort is None:
+            cohort = CohortRetention(
+                cohort_month=cohort_key,
+                cohort_size=int(r["cohort_size"]),
+                points=[],
+            )
+            by_month[cohort_key] = cohort
+            cohorts.append(cohort)
+        cohort.points.append(
+            CohortRetentionPoint(
+                months_since=int(r["months_since"]),
+                activity_month=_isodate(r["activity_month"]),
+                active_households=int(r["active_households"]),
+                retention_rate=_rate(r["retention_rate"]),
+            )
+        )
+    return RetentionCohortsResponse(
+        as_of_date=settings.as_of_date,
+        n_cohorts=len(cohorts),
+        cohorts=cohorts,
     )

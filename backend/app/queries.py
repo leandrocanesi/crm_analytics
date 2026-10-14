@@ -92,6 +92,38 @@ FROM agg_household_rfm
 WHERE (? IS NULL OR rfm_segment = ?)
 """
 
+# Retenção período-a-período (mensal, metrics.md §6.2) — lê a tabela já agregada.
+# Grão = mês de atividade (12 linhas). A última linha (2017-12) tem
+# next_month_partial = TRUE: 2018-01 é o mês-fronteira parcial do dataset, logo a
+# taxa subestima a retenção e NÃO representa churn real. Ordenado por mês ASC.
+RETENTION_MONTHLY = """
+SELECT
+    activity_month,
+    active_households,
+    retained_next_month,
+    retention_rate,
+    next_month_partial
+FROM agg_retention_monthly
+ORDER BY activity_month ASC
+"""
+
+# Coorte de retenção (metrics.md §6.3) — triângulo coorte × mês (84 linhas).
+# Grão = coorte (mês da PRIMEIRA aparição na janela) × mês de atividade. O service
+# monta a estrutura aninhada a partir destas linhas. Ordenado por coorte ASC e,
+# dentro da coorte, por meses-desde-a-coorte ASC (estável para o triângulo).
+# LEFT-CENSORING: cohort_month = primeira aparição na janela, NÃO a aquisição real.
+COHORT_RETENTION = """
+SELECT
+    cohort_month,
+    activity_month,
+    months_since,
+    cohort_size,
+    active_households,
+    retention_rate
+FROM agg_cohort_retention
+ORDER BY cohort_month ASC, months_since ASC
+"""
+
 # Allow-list de colunas ordenáveis: nome exposto na API -> coluna física no Gold.
 # Apenas estes valores podem entrar no ORDER BY (defesa contra SQL injection).
 RFM_SORT_COLUMNS: dict[str, str] = {

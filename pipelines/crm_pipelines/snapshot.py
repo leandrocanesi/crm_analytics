@@ -468,7 +468,7 @@ def _structural_checks_on_published(result: PublishResult) -> list[AssetCheckRes
         )
     )
 
-    # b) O snapshot abre em read_only e as 4 tabelas estão presentes.
+    # b) O snapshot abre em read_only e todas as tabelas Gold estão presentes.
     opens_ok = False
     n_tables = 0
     try:
@@ -509,7 +509,7 @@ def build_published_snapshot_asset() -> AssetsDefinition:
         AssetCheckSpec(
             name=CHECK_OPENS_READ_ONLY,
             asset=_ASSET_KEY,
-            description="O snapshot publicado abre em read_only com as 4 tabelas Gold.",
+            description="O snapshot publicado abre em read_only com todas as tabelas Gold.",
         ),
     ]
 

@@ -9,9 +9,12 @@ Dagster é o único escritor (CLAUDE.md regra 6); **nenhum snapshot DuckDB é
 publicado nesta fase**.
 
 Ordem de implementação (docs/metrics.md §7): fct_basket → agg_weekly_revenue →
-agg_household_rfm → agg_household_activity_month. Cada tabela reconcilia com a
-âncora de receita US$ 4.596.039,58 (fonte única = a fato; nunca um join que faça
-fan-out — data-model §4) e com as contagens (155.848 cestas, 2.469 domicílios).
+agg_household_rfm → agg_household_activity_month → agg_retention_monthly →
+agg_cohort_retention. As tabelas de receita reconciliam com a âncora
+US$ 4.596.039,58 (fonte única = a fato; nunca um join que faça fan-out —
+data-model §4) e com as contagens (155.848 cestas, 2.469 domicílios); as de
+retenção derivam da base de atividade mensal e carregam checks próprios (taxa em
+[0,1], numerador <= denominador, partição das coortes = universo).
 
 Os asset checks validam o **Parquet Gold já persistido** (não um DataFrame em
 memória): o que foi gravado é exatamente o que é verificado.
@@ -63,13 +66,26 @@ def _gold_src(name: str) -> str:
     return f"read_parquet('{base}/{name}.parquet')"
 
 
-def _resolve_transform_sql(spec: GoldSpec) -> str:
-    """Resolve placeholders ``{silver_<t>}`` / ``{gold_<t>}`` do SQL da spec."""
+def _dep_sources(spec: GoldSpec) -> dict[str, str]:
+    """Mapa ``{layer}_{table}`` -> expressão read_parquet das dependências da spec."""
     sources: dict[str, str] = {}
     for layer, table in spec.all_deps:
         key = f"{layer}_{table}"
         sources[key] = _silver_src(table) if layer == "silver" else _gold_src(table)
-    return spec.transform_sql.format(**sources)
+    return sources
+
+
+def _resolve_transform_sql(spec: GoldSpec) -> str:
+    """Resolve placeholders ``{silver_<t>}`` / ``{gold_<t>}`` do SQL da spec."""
+    return spec.transform_sql.format(**_dep_sources(spec))
+
+
+def _resolve_check_sql(spec: GoldSpec, sql: str) -> str:
+    """Resolve o SQL de um IntegrityCheck: ``{this}`` (a própria Gold já gravada)
+    + os placeholders de dependência ``{silver_<t>}`` / ``{gold_<t>}``."""
+    sources = _dep_sources(spec)
+    sources["this"] = _gold_src(spec.name)
+    return sql.format(**sources)
 
 
 def _write_gold(con: duckdb.DuckDBPyConnection, spec: GoldSpec, sql: str) -> int:
@@ -122,6 +138,10 @@ def _build_check_specs(spec: GoldSpec) -> list[AssetCheckSpec]:
     specs += [
         AssetCheckSpec(name=c.name, asset=asset_key, description=c.description)
         for c in spec.violation_checks
+    ]
+    specs += [
+        AssetCheckSpec(name=c.name, asset=asset_key, description=c.description)
+        for c in spec.integrity_checks
     ]
     return specs
 
@@ -199,6 +219,34 @@ def build_gold_asset(spec: GoldSpec) -> AssetsDefinition:
                     "O mês 2018-01 é a fronteira parcial da semana 53 (domicílios "
                     "que compraram em 01/01/2018) — esperado, não um erro."
                 )
+            if spec.name == "agg_retention_monthly":
+                rates = con.execute(
+                    f"SELECT activity_month, round(retention_rate, 4), next_month_partial "
+                    f"FROM {src} ORDER BY activity_month"
+                ).fetchall()
+                metadata["retention_rate_by_month"] = MetadataValue.json(
+                    {str(r[0]): float(r[1]) for r in rates}
+                )
+                metadata["partial_note"] = MetadataValue.text(
+                    "A linha 2017-12 -> 2018-01 (next_month_partial=TRUE) usa o mês "
+                    "parcial como M+1; a taxa está subestimada (fim da janela, não "
+                    "churn). M=2018-01 é omitido como origem. Observacional: sem "
+                    "causalidade."
+                )
+            if spec.name == "agg_cohort_retention":
+                sizes = con.execute(
+                    f"SELECT cohort_month, ANY_VALUE(cohort_size) FROM {src} "
+                    "GROUP BY cohort_month ORDER BY cohort_month"
+                ).fetchall()
+                metadata["cohort_sizes"] = MetadataValue.json(
+                    {str(r[0]): int(r[1]) for r in sizes}
+                )
+                metadata["left_censoring_note"] = MetadataValue.text(
+                    "cohort_month = primeira aparição NA JANELA, NÃO aquisição real. "
+                    "A coorte de 2017-01 é inchada porque os dados começam ali — não "
+                    "são 'novos de janeiro'. Right-censoring: coortes tardias têm "
+                    "menos meses para maturar. Observacional: sem causalidade."
+                )
 
             yield MaterializeResult(metadata=metadata)
 
@@ -261,6 +309,18 @@ def build_gold_asset(spec: GoldSpec) -> AssetsDefinition:
                     passed=bad == 0,
                     severity=AssetCheckSeverity.ERROR,
                     metadata={"violating_rows": MetadataValue.int(bad)},
+                )
+
+            # 3e. Checks de integridade cross-table (ERROR) — o SQL devolve o nº de
+            #     violações (p.ex. meses cujo denominador não bate com a base).
+            for ic in spec.integrity_checks:
+                check_sql = _resolve_check_sql(spec, ic.count_sql)
+                bad = int(con.execute(check_sql).fetchone()[0])
+                yield AssetCheckResult(
+                    check_name=ic.name,
+                    passed=bad == 0,
+                    severity=AssetCheckSeverity.ERROR,
+                    metadata={"violations": MetadataValue.int(bad)},
                 )
         finally:
             con.close()

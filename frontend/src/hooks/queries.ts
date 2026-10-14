@@ -16,6 +16,8 @@ export const queryKeys = {
   /** Inclui os params normalizados para refazer fetch ao mudar filtro/ordenação/página. */
   rfmHouseholds: (params: RfmHouseholdsParams) =>
     ["rfm", "households", params] as const,
+  retentionMonthly: ["retention", "monthly"] as const,
+  retentionCohorts: ["retention", "cohorts"] as const,
 };
 
 /** Snapshot é imutável; 5 min de staleTime evita refetch desnecessário. */
@@ -64,5 +66,21 @@ export function useRfmHouseholds(params: RfmHouseholdsParams) {
     queryFn: () => api.getRfmHouseholds(params),
     staleTime: SNAPSHOT_STALE_TIME,
     placeholderData: keepPreviousData,
+  });
+}
+
+export function useRetentionMonthly() {
+  return useQuery({
+    queryKey: queryKeys.retentionMonthly,
+    queryFn: api.getRetentionMonthly,
+    staleTime: SNAPSHOT_STALE_TIME,
+  });
+}
+
+export function useRetentionCohorts() {
+  return useQuery({
+    queryKey: queryKeys.retentionCohorts,
+    queryFn: api.getRetentionCohorts,
+    staleTime: SNAPSHOT_STALE_TIME,
   });
 }

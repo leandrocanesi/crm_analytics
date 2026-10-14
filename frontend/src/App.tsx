@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   type LucideIcon,
   Moon,
+  Repeat2,
   Sun,
   Users,
   Waypoints,
@@ -12,6 +13,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
 import { Overview } from "@/pages/Overview";
+import { Retention } from "@/pages/Retention";
 import { Rfm } from "@/pages/Rfm";
 
 interface NavItem {
@@ -26,6 +28,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Visão geral", to: "/", icon: LayoutDashboard },
   { label: "Receita", to: "/receita", icon: BarChart3, disabled: true },
   { label: "Segmentos RFM", to: "/rfm", icon: Waypoints },
+  { label: "Retenção", to: "/retention", icon: Repeat2 },
   { label: "Clientes", to: "/clientes", icon: Users, disabled: true },
 ];
 
@@ -117,6 +120,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<Overview />} />
           <Route path="/rfm" element={<Rfm />} />
+          <Route path="/retention" element={<Retention />} />
         </Routes>
       </main>
     </div>
