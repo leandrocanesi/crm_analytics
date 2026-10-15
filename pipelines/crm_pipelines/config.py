@@ -40,6 +40,20 @@ BASKET_ANCHOR: int = 155_848  # cestas distintas (COUNT DISTINCT basket_id)
 LINE_ANCHOR: int = 1_469_307  # linhas item-de-linha (= SUM(n_items) em fct_basket)
 HOUSEHOLD_UNIVERSE: int = 2_469  # domicílios distintos (todos com >= 1 cesta)
 
+# Âncoras factuais de campanha/cupom (Marketing Analytics), ver docs/metrics.md
+# §8.0.1. São FATOS dos dados — conferidos por prototipagem real sobre o Parquet
+# Silver em 2026-10-14. Estas tabelas Gold NUNCA tocam em sales_value (regra
+# anti-fan-out §8.0.2): nenhuma delas soma receita.
+CAMPAIGN_COUNT: int = 27  # campanhas (campaign_descriptions), tipos Type A/B/C
+CAMPAIGN_EXPOSURE_ANCHOR: int = 6_589  # exposições = linhas da ponte domicílio×campanha
+EXPOSED_HOUSEHOLDS_ANCHOR: int = 1_559  # domicílios distintos expostos (63,1% dos 2.469)
+REDEMPTION_EVENT_ANCHOR: int = 2_102  # eventos de resgate (coupon_redemptions)
+REDEEMER_HOUSEHOLDS_ANCHOR: int = 410  # domicílios distintos que resgataram (26,3% dos expostos)
+COUPONS_REDEEMED_ANCHOR: int = 491  # cupons distintos resgatados (de 981)
+# Pares (domicílio, campanha) distintos que resgataram = SUM(households_redeemed)
+# por campanha = numerador da taxa de resposta por oferta (§8.2.b). 792/6.589 = 12,0%.
+REDEEMER_PAIRS_ANCHOR: int = 792
+
 # Data de referência (as-of) FIXA para recência — a máxima data observada.
 # NUNCA a data atual do computador (CLAUDE.md regra 8 / metrics.md §0).
 AS_OF_DATE: str = "2018-01-01"

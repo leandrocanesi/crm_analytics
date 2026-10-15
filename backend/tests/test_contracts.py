@@ -199,6 +199,9 @@ def test_openapi_available(client: TestClient) -> None:
         "/rfm/households",
         "/retention/monthly",
         "/retention/cohorts",
+        "/campaigns/performance",
+        "/campaigns/by-type",
+        "/campaigns/overlap",
     ):
         assert path in paths
         # Contrato read-only: cada endpoint só expõe GET.

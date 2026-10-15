@@ -248,6 +248,55 @@ def build_gold_asset(spec: GoldSpec) -> AssetsDefinition:
                     "menos meses para maturar. Observacional: sem causalidade."
                 )
 
+            # --- Campanha / cupom (metrics.md §8) -------------------------
+            if spec.name == "dim_campaign":
+                rows = con.execute(
+                    f"SELECT campaign_type, COUNT(*) AS n, SUM(households_exposed) "
+                    f"FROM {src} GROUP BY 1 ORDER BY 1"
+                ).fetchall()
+                metadata["campaigns_by_type"] = MetadataValue.json(
+                    {r[0]: {"n_campaigns": int(r[1]), "exposures": int(r[2])} for r in rows}
+                )
+            if spec.name == "agg_campaign_performance":
+                top = con.execute(
+                    f"SELECT campaign_id, campaign_type, households_exposed, "
+                    f"households_redeemed, round(redemption_rate, 4) "
+                    f"FROM {src} ORDER BY redemption_rate DESC LIMIT 5"
+                ).fetchall()
+                metadata["top5_redemption_rate"] = MetadataValue.json(
+                    {
+                        r[0]: {
+                            "type": r[1],
+                            "exposed": int(r[2]),
+                            "redeemed": int(r[3]),
+                            "rate": float(r[4]),
+                        }
+                        for r in top
+                    }
+                )
+                metadata["exposure_note"] = MetadataValue.text(
+                    "redemption_rate = resgatadores DISTINTOS / expostos (household-"
+                    "level, §8.2). Exposição != efeito; resgate != conversão causada."
+                )
+            if spec.name == "agg_coupon_redemption":
+                rows = con.execute(
+                    f"SELECT campaign_type, households_exposed, n_redemption_events, "
+                    f"households_redeemed, n_coupons_redeemed, round(redemption_rate, 4) "
+                    f"FROM {src} ORDER BY campaign_type"
+                ).fetchall()
+                metadata["redemption_by_type"] = MetadataValue.json(
+                    {
+                        r[0]: {
+                            "exposed": int(r[1]),
+                            "events": int(r[2]),
+                            "redeemed": int(r[3]),
+                            "coupons": int(r[4]),
+                            "rate": float(r[5]),
+                        }
+                        for r in rows
+                    }
+                )
+
             yield MaterializeResult(metadata=metadata)
 
             # --- 3. Asset checks -------------------------------------------

@@ -14,6 +14,11 @@ from typing import Any
 
 from .config import Settings
 from .queries import (
+    CAMPAIGN_BY_TYPE,
+    CAMPAIGN_EXPOSED_TOTAL,
+    CAMPAIGN_OVERLAP_DISTRIBUTION,
+    CAMPAIGN_OVERLAP_SUMMARY,
+    CAMPAIGN_PERFORMANCE,
     COHORT_RETENTION,
     META,
     OVERVIEW,
@@ -26,6 +31,12 @@ from .queries import (
     WEEKLY_REVENUE,
 )
 from .schemas import (
+    CampaignByTypeResponse,
+    CampaignOverlapBin,
+    CampaignOverlapResponse,
+    CampaignPerformanceItem,
+    CampaignPerformanceResponse,
+    CampaignTypeItem,
     CohortRetention,
     CohortRetentionPoint,
     MetaResponse,
@@ -279,4 +290,105 @@ def build_retention_cohorts(
         as_of_date=settings.as_of_date,
         n_cohorts=len(cohorts),
         cohorts=cohorts,
+    )
+
+
+# --- Campanha e Cupom (metrics.md §8, factual 8.1–8.4) -------------------------
+# Só expõe o que o Gold já calculou (agg_campaign_performance, agg_coupon_redemption,
+# agg_household_campaign_exposure, dim_campaign, bridge_household_campaign). Nenhuma
+# métrica monetária: os dados não ligam receita a campanha (metrics.md §8.0).
+
+
+def build_campaign_performance(
+    snap: SnapshotManager, settings: Settings
+) -> CampaignPerformanceResponse:
+    """Alcance + taxa de resposta por campanha (metrics.md §8.1 e §8.2.a).
+
+    households_exposed_total é o universo DISTINTO alcançado (de
+    bridge_household_campaign) — NÃO a soma por campanha (alcance não é aditivo,
+    §8.0.2). universe_households reconcilia a âncora do painel (household_count).
+    """
+    rows = snap.query(CAMPAIGN_PERFORMANCE)
+    exposed_total = int(
+        snap.query_one(CAMPAIGN_EXPOSED_TOTAL)["households_exposed_total"]
+    )
+    universe = int(snap.query_one(META)["household_count"])
+    campaigns = [
+        CampaignPerformanceItem(
+            campaign_id=str(r["campaign_id"]),
+            campaign_type=str(r["campaign_type"]),
+            start_date=_isodate(r["start_date"]),
+            end_date=_isodate(r["end_date"]),
+            households_exposed=int(r["households_exposed"]),
+            households_redeemed=int(r["households_redeemed"]),
+            redemption_rate=_rate(r["redemption_rate"]),
+        )
+        for r in rows
+    ]
+    return CampaignPerformanceResponse(
+        as_of_date=settings.as_of_date,
+        n_campaigns=len(campaigns),
+        universe_households=universe,
+        households_exposed_total=exposed_total,
+        campaigns=campaigns,
+    )
+
+
+def build_campaign_by_type(
+    snap: SnapshotManager, settings: Settings
+) -> CampaignByTypeResponse:
+    """Resgate agregado por tipo A/B/C (metrics.md §8.4).
+
+    Expostos/resgatadores NÃO são aditivos entre tipos; só n_redemption_events soma
+    (a ressalva vive no ``note`` do schema).
+    """
+    rows = snap.query(CAMPAIGN_BY_TYPE)
+    types = [
+        CampaignTypeItem(
+            campaign_type=str(r["campaign_type"]),
+            n_campaigns=int(r["n_campaigns"]),
+            households_exposed=int(r["households_exposed"]),
+            n_redemption_events=int(r["n_redemption_events"]),
+            households_redeemed=int(r["households_redeemed"]),
+            n_coupons_redeemed=int(r["n_coupons_redeemed"]),
+            redemption_rate=_rate(r["redemption_rate"]),
+        )
+        for r in rows
+    ]
+    return CampaignByTypeResponse(
+        as_of_date=settings.as_of_date,
+        types=types,
+    )
+
+
+def build_campaign_overlap(
+    snap: SnapshotManager, settings: Settings
+) -> CampaignOverlapResponse:
+    """Participação e sobreposição de campanha no painel (metrics.md §8.3).
+
+    exposure_rate = total_exposed / universo do painel (household_count, âncora).
+    A distribuição é o histograma de nº de campanhas por domicílio (soma =
+    total_exposed).
+    """
+    summary = snap.query_one(CAMPAIGN_OVERLAP_SUMMARY)
+    total_exposed = int(summary["total_exposed"])
+    universe = int(snap.query_one(META)["household_count"])
+    rows = snap.query(CAMPAIGN_OVERLAP_DISTRIBUTION)
+    distribution = [
+        CampaignOverlapBin(
+            n_campaigns_exposed=int(r["n_campaigns_exposed"]),
+            n_households=int(r["n_households"]),
+        )
+        for r in rows
+    ]
+    return CampaignOverlapResponse(
+        as_of_date=settings.as_of_date,
+        total_exposed=total_exposed,
+        universe=universe,
+        exposure_rate=round(total_exposed / universe, 4) if universe else 0.0,
+        avg_campaigns_per_household=round(
+            _f(summary["avg_campaigns_per_household"]), 2
+        ),
+        max_campaigns_per_household=int(summary["max_campaigns_per_household"]),
+        distribution=distribution,
     )

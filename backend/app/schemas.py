@@ -320,3 +320,168 @@ class RetentionCohortsResponse(BaseModel):
         default=RETENTION_COHORTS_NOTE,
         description="Ressalva de left/right-censoring + aviso observacional.",
     )
+
+
+# --- Campanha e Cupom (metrics.md §8, factual 8.1–8.4) -------------------------
+# Área analiticamente mais perigosa do projeto (metrics.md §8.0). TODAS as respostas
+# desta seção carregam as três verdades inegociáveis: exposição ≠ efeito; resgate ≠
+# conversão causada (autosseleção, sem grupo de controle); NÃO há atribuição de
+# receita a campanha nos dados — por isso NENHUMA métrica monetária aqui (anti-fan-out,
+# §8.0.2). Correlação ≠ causalidade (CLAUDE.md regra 9).
+
+# Ressalva base reaproveitada por todas as respostas de campanha (metrics.md §8.0).
+CAMPAIGN_BASE_NOTE = (
+    "Leitura FACTUAL e OBSERVACIONAL de distribuição/resgate (metrics.md §8.0). "
+    "Exposição ≠ efeito: 'foi alvo' não é 'viu/engajou'. Resgate ≠ conversão "
+    "causada: quem resgata provavelmente já compraria (autosseleção) e NÃO há grupo "
+    "de controle aleatorizado. NÃO há atribuição de receita a campanha nos dados "
+    "(transactions.coupon_disc não traz coupon_upc), por isso NENHUMA métrica "
+    "monetária aqui. Correlação ≠ causalidade."
+)
+
+# §8.1 + §8.2.a — alcance e taxa de resposta por campanha.
+CAMPAIGN_PERFORMANCE_NOTE = (
+    CAMPAIGN_BASE_NOTE
+    + " Ordenado por households_exposed DESC. redemption_rate = "
+    "households_redeemed / households_exposed (binária por domicílio, metrics.md "
+    "§8.2.a), em [0,1]. Alcance NÃO é aditivo entre campanhas: a soma dos "
+    "households_exposed das 27 campanhas (6.589 exposições) NÃO é o universo "
+    "alcançado — são 1.559 domicílios distintos (households_exposed_total)."
+)
+
+# §8.4 — resgate por tipo A/B/C, com o aviso de não-aditividade (crítico).
+CAMPAIGN_BY_TYPE_NOTE = (
+    CAMPAIGN_BASE_NOTE
+    + " ATENÇÃO à aditividade (metrics.md §8.0.2): households_exposed e "
+    "households_redeemed NÃO são aditivos entre tipos — um mesmo domicílio pode "
+    "estar em campanhas de >1 tipo, então somar os tipos conta o lar mais de uma "
+    "vez (soma dos expostos 2.882 ≠ 1.559 distintos; soma dos resgatadores 517 ≠ "
+    "410 distintos). SOMENTE os eventos (n_redemption_events) são aditivos (somam "
+    "2.102). A/B/C são rótulos opacos; comparar tipos exige a taxa, não o volume "
+    "bruto (um tipo pode ter mais resgates só por ter sido enviado a mais gente)."
+)
+
+# §8.3 — participação e sobreposição.
+CAMPAIGN_OVERLAP_NOTE = (
+    CAMPAIGN_BASE_NOTE
+    + " exposure_rate = total_exposed / universe = 1.559 / 2.469 ≈ 63,1% do painel "
+    "foi alvo de ≥1 campanha. A distribuição mostra quantos domicílios receberam N "
+    "campanhas (sobreposição; média ≈4,23, máx 15). VIÉS DE SELEÇÃO: se lares de "
+    "maior valor receberam mais campanhas, comparar expostos vs. não-expostos "
+    "confunde efeito com qualidade prévia do cliente. Os 36,9% nunca alvejados NÃO "
+    "são um grupo de controle válido (não houve aleatorização)."
+)
+
+
+class CampaignPerformanceItem(BaseModel):
+    """Uma campanha: alcance + taxa de resposta (metrics.md §8.1 e §8.2.a)."""
+
+    campaign_id: str = Field(description="Identificador da campanha.")
+    campaign_type: str = Field(description="Tipo da campanha (rótulo opaco: A/B/C).")
+    start_date: str = Field(
+        description="Início da campanha (ISO date YYYY-MM-DD; contexto, §8.1)."
+    )
+    end_date: str = Field(
+        description="Fim da campanha (ISO date YYYY-MM-DD; pode exceder a janela 2017)."
+    )
+    households_exposed: int = Field(
+        description="Domicílios distintos alvo desta campanha (alcance; NÃO aditivo)."
+    )
+    households_redeemed: int = Field(
+        description="Domicílios expostos que resgataram ≥1 cupom dela (⊆ expostos)."
+    )
+    redemption_rate: float = Field(
+        description="households_redeemed / households_exposed (binária por lar; [0,1])."
+    )
+
+
+class CampaignPerformanceResponse(BaseModel):
+    """Desempenho por campanha: alcance e taxa de resgate (metrics.md §8.1/§8.2)."""
+
+    as_of_date: str = Field(description="Data de referência (as-of) do dataset.")
+    n_campaigns: int = Field(description="Nº de campanhas (esperado 27).")
+    universe_households: int = Field(
+        description="Universo do painel (2.469; denominador de cobertura)."
+    )
+    households_exposed_total: int = Field(
+        description="Domicílios DISTINTOS expostos a ≥1 campanha (1.559; NÃO é a soma)."
+    )
+    campaigns: list[CampaignPerformanceItem] = Field(
+        description="Campanhas ordenadas por households_exposed (desc)."
+    )
+    note: str = Field(
+        default=CAMPAIGN_PERFORMANCE_NOTE,
+        description="Ressalvas §8.0 + não-aditividade do alcance + definição da taxa.",
+    )
+
+
+class CampaignTypeItem(BaseModel):
+    """Agregado de resgate por tipo de campanha A/B/C (metrics.md §8.4)."""
+
+    campaign_type: str = Field(description="Tipo da campanha (rótulo opaco: A/B/C).")
+    n_campaigns: int = Field(description="Nº de campanhas deste tipo (soma = 27).")
+    households_exposed: int = Field(
+        description="Domicílios expostos a este tipo (NÃO aditivo entre tipos)."
+    )
+    n_redemption_events: int = Field(
+        description="Nº de eventos de resgate (volume; ADITIVO entre tipos → 2.102)."
+    )
+    households_redeemed: int = Field(
+        description="Domicílios que resgataram neste tipo (distinto; NÃO aditivo)."
+    )
+    n_coupons_redeemed: int = Field(
+        description="Cupons distintos resgatados neste tipo (NÃO aditivo)."
+    )
+    redemption_rate: float = Field(
+        description="households_redeemed / households_exposed deste tipo ([0,1])."
+    )
+
+
+class CampaignByTypeResponse(BaseModel):
+    """Resgate agregado por tipo A/B/C (metrics.md §8.4)."""
+
+    as_of_date: str = Field(description="Data de referência (as-of) do dataset.")
+    types: list[CampaignTypeItem] = Field(
+        description="Tipos ordenados por campaign_type (asc)."
+    )
+    note: str = Field(
+        default=CAMPAIGN_BY_TYPE_NOTE,
+        description="Ressalvas §8.0 + não-aditividade (crítico) de expostos/resgatadores",
+    )
+
+
+class CampaignOverlapBin(BaseModel):
+    """Um ponto do histograma de sobreposição (metrics.md §8.3)."""
+
+    n_campaigns_exposed: int = Field(
+        description="Nº de campanhas recebidas por um domicílio (1..15)."
+    )
+    n_households: int = Field(
+        description="Domicílios que receberam exatamente esse nº de campanhas."
+    )
+
+
+class CampaignOverlapResponse(BaseModel):
+    """Participação e sobreposição de campanha no painel (metrics.md §8.3)."""
+
+    as_of_date: str = Field(description="Data de referência (as-of) do dataset.")
+    total_exposed: int = Field(
+        description="Domicílios distintos expostos a ≥1 campanha (1.559)."
+    )
+    universe: int = Field(description="Universo do painel (2.469).")
+    exposure_rate: float = Field(
+        description="total_exposed / universe (cobertura do painel; ≈0,631)."
+    )
+    avg_campaigns_per_household: float = Field(
+        description="Média de campanhas por domicílio exposto (≈4,23)."
+    )
+    max_campaigns_per_household: int = Field(
+        description="Máx. de campanhas recebidas por um único domicílio (15)."
+    )
+    distribution: list[CampaignOverlapBin] = Field(
+        description="Histograma por nº de campanhas recebidas (soma = total_exposed)."
+    )
+    note: str = Field(
+        default=CAMPAIGN_OVERLAP_NOTE,
+        description="Ressalvas §8.0 + viés de seleção + '36,9% não é grupo de controle'.",
+    )

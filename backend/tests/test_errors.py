@@ -44,6 +44,9 @@ def test_health_reporta_indisponivel(client_sem_snapshot: TestClient) -> None:
         "/rfm/households",
         "/retention/monthly",
         "/retention/cohorts",
+        "/campaigns/performance",
+        "/campaigns/by-type",
+        "/campaigns/overlap",
     ],
 )
 def test_endpoints_de_dados_retornam_503(

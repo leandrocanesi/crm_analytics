@@ -14,9 +14,16 @@ import pytest
 
 from crm_pipelines.config import (
     BASKET_ANCHOR,
+    CAMPAIGN_COUNT,
+    CAMPAIGN_EXPOSURE_ANCHOR,
+    COUPONS_REDEEMED_ANCHOR,
+    EXPOSED_HOUSEHOLDS_ANCHOR,
     GOLD_DIR,
     HOUSEHOLD_UNIVERSE,
     LINE_ANCHOR,
+    REDEEMER_HOUSEHOLDS_ANCHOR,
+    REDEEMER_PAIRS_ANCHOR,
+    REDEMPTION_EVENT_ANCHOR,
     REVENUE_ANCHOR_USD,
 )
 from crm_pipelines.gold import _resolve_transform_sql
@@ -275,3 +282,151 @@ def test_cohort_retention_left_censoring_visible() -> None:
     # janeiro', é onde a janela abre. Documenta a armadilha do left-censoring.
     assert jan_size == 1982
     assert jan_size > HOUSEHOLD_UNIVERSE * 0.5
+
+
+# ---------------------------------------------------------------------------
+# Campanha / cupom (§8, factual 8.1–8.4). *** NENHUMA destas tabelas soma
+# sales_value (anti-fan-out §8.0.2) — os testes só exercitam contagens e taxas. ***
+# bridge e fct_coupon_redemption derivam só da Silver (rodáveis sem Gold em disco);
+# os agregados que dependem de Gold em disco usam skipif.
+# ---------------------------------------------------------------------------
+_BRIDGE_PARQUET = (
+    GOLD_DIR / "bridge_household_campaign" / "bridge_household_campaign.parquet"
+)
+_DIM_CAMPAIGN_PARQUET = GOLD_DIR / "dim_campaign" / "dim_campaign.parquet"
+_FCT_REDEMPTION_PARQUET = (
+    GOLD_DIR / "fct_coupon_redemption" / "fct_coupon_redemption.parquet"
+)
+_needs_bridge = pytest.mark.skipif(
+    not _BRIDGE_PARQUET.exists(),
+    reason="gold.bridge_household_campaign ainda não materializado.",
+)
+_needs_dim_campaign = pytest.mark.skipif(
+    not _DIM_CAMPAIGN_PARQUET.exists(),
+    reason="gold.dim_campaign ainda não materializado.",
+)
+_needs_fct_redemption = pytest.mark.skipif(
+    not _FCT_REDEMPTION_PARQUET.exists(),
+    reason="gold.fct_coupon_redemption ainda não materializado.",
+)
+
+
+def test_bridge_household_campaign_anchors() -> None:
+    """bridge: 6.589 pares, 1.559 domicílios distintos, 27 campanhas, sem duplicata."""
+    con = duckdb.connect()
+    sql = _resolve_transform_sql(GOLD_SPECS_BY_NAME["bridge_household_campaign"])
+    row = con.execute(
+        f"""SELECT
+                COUNT(*),
+                COUNT(DISTINCT household_id),
+                COUNT(DISTINCT campaign_id),
+                COUNT(*) - COUNT(DISTINCT (campaign_id, household_id))
+            FROM ({sql})"""
+    ).fetchone()
+    assert row[0] == CAMPAIGN_EXPOSURE_ANCHOR
+    assert row[1] == EXPOSED_HOUSEHOLDS_ANCHOR
+    assert row[2] == CAMPAIGN_COUNT
+    assert row[3] == 0  # sem duplicatas no par (household_id, campaign_id)
+
+
+def test_fct_coupon_redemption_anchors_and_grain() -> None:
+    """fct_coupon_redemption: 2.102 eventos, 410 domicílios, 491 cupons, grão único."""
+    con = duckdb.connect()
+    sql = _resolve_transform_sql(GOLD_SPECS_BY_NAME["fct_coupon_redemption"])
+    row = con.execute(
+        f"""SELECT
+                COUNT(*),
+                COUNT(DISTINCT household_id),
+                COUNT(DISTINCT coupon_upc),
+                COUNT(*) - COUNT(DISTINCT (household_id, coupon_upc, campaign_id, redemption_date)),
+                SUM(CASE WHEN campaign_type IS NULL THEN 1 ELSE 0 END)
+            FROM ({sql})"""
+    ).fetchone()
+    assert row[0] == REDEMPTION_EVENT_ANCHOR
+    assert row[1] == REDEEMER_HOUSEHOLDS_ANCHOR
+    assert row[2] == COUPONS_REDEEMED_ANCHOR
+    assert row[3] == 0  # grão do evento é único
+    assert row[4] == 0  # FK campaign_id sempre resolve campaign_type
+
+
+@_needs_bridge
+def test_dim_campaign_shape_and_domain() -> None:
+    """dim_campaign: 27 campanhas, tipos reais, SUM(exposed)=6.589, todos exposed>0."""
+    con = duckdb.connect()
+    sql = _resolve_transform_sql(GOLD_SPECS_BY_NAME["dim_campaign"])
+    row = con.execute(
+        f"""SELECT
+                COUNT(*),
+                SUM(households_exposed),
+                SUM(CASE WHEN households_exposed < 1 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN campaign_type NOT IN ('Type A','Type B','Type C')
+                         THEN 1 ELSE 0 END)
+            FROM ({sql})"""
+    ).fetchone()
+    assert row[0] == CAMPAIGN_COUNT
+    assert row[1] == CAMPAIGN_EXPOSURE_ANCHOR  # soma dos alcances == pares da ponte
+    assert row[2] == 0  # toda campanha tem >= 1 exposto
+    assert row[3] == 0  # domínio de tipo real
+
+
+@_needs_bridge
+def test_household_campaign_exposure_reconciles() -> None:
+    """agg_household_campaign_exposure: 1.559 domicílios, SUM(n_campaigns_exposed)=6.589."""
+    con = duckdb.connect()
+    sql = _resolve_transform_sql(
+        GOLD_SPECS_BY_NAME["agg_household_campaign_exposure"]
+    )
+    row = con.execute(
+        f"""SELECT COUNT(*), SUM(n_campaigns_exposed),
+                   MIN(n_campaigns_exposed), MAX(n_campaigns_exposed)
+            FROM ({sql})"""
+    ).fetchone()
+    assert row[0] == EXPOSED_HOUSEHOLDS_ANCHOR
+    assert row[1] == CAMPAIGN_EXPOSURE_ANCHOR
+    assert row[2] >= 1  # só domicílios expostos
+    assert row[3] == 15  # máx. observado (§8.0.1)
+
+
+@_needs_dim_campaign
+@_needs_fct_redemption
+def test_campaign_performance_rate_bounds_and_reconcile() -> None:
+    """agg_campaign_performance: 27 linhas, taxa em [0,1], redeemed<=exposed, somas batem."""
+    con = duckdb.connect()
+    sql = _resolve_transform_sql(GOLD_SPECS_BY_NAME["agg_campaign_performance"])
+    row = con.execute(
+        f"""SELECT
+                COUNT(*),
+                MIN(redemption_rate), MAX(redemption_rate),
+                SUM(CASE WHEN households_redeemed > households_exposed THEN 1 ELSE 0 END),
+                SUM(CASE WHEN households_exposed < 1 THEN 1 ELSE 0 END),
+                SUM(households_exposed),
+                SUM(households_redeemed)
+            FROM ({sql})"""
+    ).fetchone()
+    assert row[0] == CAMPAIGN_COUNT
+    assert row[1] >= 0.0 and row[2] <= 1.0  # taxa household-level em [0,1]
+    assert row[3] == 0  # numerador nunca excede o denominador
+    assert row[4] == 0  # todo denominador > 0
+    assert row[5] == CAMPAIGN_EXPOSURE_ANCHOR  # SUM(exposed) == 6.589
+    assert row[6] == REDEEMER_PAIRS_ANCHOR  # SUM(redeemed) == 792 pares distintos
+
+
+@_needs_bridge
+@_needs_dim_campaign
+@_needs_fct_redemption
+def test_coupon_redemption_by_type_events_additive() -> None:
+    """agg_coupon_redemption: 3 tipos, eventos somam 2.102 (aditivos), taxa em [0,1]."""
+    con = duckdb.connect()
+    sql = _resolve_transform_sql(GOLD_SPECS_BY_NAME["agg_coupon_redemption"])
+    row = con.execute(
+        f"""SELECT
+                COUNT(*),
+                SUM(n_redemption_events),
+                MIN(redemption_rate), MAX(redemption_rate),
+                SUM(CASE WHEN households_redeemed > households_exposed THEN 1 ELSE 0 END)
+            FROM ({sql})"""
+    ).fetchone()
+    assert row[0] == 3  # Type A / B / C
+    assert row[1] == REDEMPTION_EVENT_ANCHOR  # eventos são aditivos => 2.102
+    assert row[2] >= 0.0 and row[3] <= 1.0
+    assert row[4] == 0

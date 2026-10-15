@@ -2,6 +2,7 @@ import {
   BarChart3,
   LayoutDashboard,
   type LucideIcon,
+  Megaphone,
   Moon,
   Repeat2,
   Sun,
@@ -12,6 +13,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
+import { Campaigns } from "@/pages/Campaigns";
 import { Overview } from "@/pages/Overview";
 import { Retention } from "@/pages/Retention";
 import { Rfm } from "@/pages/Rfm";
@@ -29,6 +31,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Receita", to: "/receita", icon: BarChart3, disabled: true },
   { label: "Segmentos RFM", to: "/rfm", icon: Waypoints },
   { label: "Retenção", to: "/retention", icon: Repeat2 },
+  { label: "Campanhas", to: "/campaigns", icon: Megaphone },
   { label: "Clientes", to: "/clientes", icon: Users, disabled: true },
 ];
 
@@ -121,6 +124,7 @@ export function App() {
           <Route path="/" element={<Overview />} />
           <Route path="/rfm" element={<Rfm />} />
           <Route path="/retention" element={<Retention />} />
+          <Route path="/campaigns" element={<Campaigns />} />
         </Routes>
       </main>
     </div>

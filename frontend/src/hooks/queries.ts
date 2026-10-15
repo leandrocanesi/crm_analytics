@@ -18,6 +18,9 @@ export const queryKeys = {
     ["rfm", "households", params] as const,
   retentionMonthly: ["retention", "monthly"] as const,
   retentionCohorts: ["retention", "cohorts"] as const,
+  campaignPerformance: ["campaigns", "performance"] as const,
+  campaignsByType: ["campaigns", "by-type"] as const,
+  campaignOverlap: ["campaigns", "overlap"] as const,
 };
 
 /** Snapshot é imutável; 5 min de staleTime evita refetch desnecessário. */
@@ -81,6 +84,30 @@ export function useRetentionCohorts() {
   return useQuery({
     queryKey: queryKeys.retentionCohorts,
     queryFn: api.getRetentionCohorts,
+    staleTime: SNAPSHOT_STALE_TIME,
+  });
+}
+
+export function useCampaignPerformance() {
+  return useQuery({
+    queryKey: queryKeys.campaignPerformance,
+    queryFn: api.getCampaignPerformance,
+    staleTime: SNAPSHOT_STALE_TIME,
+  });
+}
+
+export function useCampaignsByType() {
+  return useQuery({
+    queryKey: queryKeys.campaignsByType,
+    queryFn: api.getCampaignsByType,
+    staleTime: SNAPSHOT_STALE_TIME,
+  });
+}
+
+export function useCampaignOverlap() {
+  return useQuery({
+    queryKey: queryKeys.campaignOverlap,
+    queryFn: api.getCampaignOverlap,
     staleTime: SNAPSHOT_STALE_TIME,
   });
 }

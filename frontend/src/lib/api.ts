@@ -176,6 +176,72 @@ export const retentionCohortsSchema = z.object({
   note: z.string(),
 });
 
+// ---------------------------------------------------------------------------
+// Campanhas (espelha GET /campaigns/performance, /by-type e /overlap)
+// Página deliberadamente NÃO-monetária: os dados não permitem atribuir
+// receita a campanha (transactions.coupon_disc não traz coupon_upc).
+// ---------------------------------------------------------------------------
+
+/** Tipos reais de campanha no dataset (rótulos opacos A/B/C). */
+export const CAMPAIGN_TYPES = ["Type A", "Type B", "Type C"] as const;
+export type CampaignType = (typeof CAMPAIGN_TYPES)[number];
+
+export const campaignPerformanceRowSchema = z.object({
+  campaign_id: z.string(),
+  campaign_type: z.string(),
+  /** ISO "YYYY-MM-DD". */
+  start_date: z.string(),
+  end_date: z.string(),
+  households_exposed: z.number(),
+  households_redeemed: z.number(),
+  /** Fração 0..1 = resgataram / expostos (binária por domicílio). */
+  redemption_rate: z.number(),
+});
+
+export const campaignPerformanceSchema = z.object({
+  as_of_date: z.string(),
+  n_campaigns: z.number(),
+  universe_households: z.number(),
+  /** Domicílios DISTINTOS alcançados por ≥1 campanha (NÃO é soma dos expostos). */
+  households_exposed_total: z.number(),
+  campaigns: z.array(campaignPerformanceRowSchema),
+  note: z.string(),
+});
+
+export const campaignTypeRowSchema = z.object({
+  campaign_type: z.string(),
+  n_campaigns: z.number(),
+  households_exposed: z.number(),
+  /** Único campo ADITIVO entre tipos. */
+  n_redemption_events: z.number(),
+  households_redeemed: z.number(),
+  n_coupons_redeemed: z.number(),
+  redemption_rate: z.number(),
+});
+
+export const campaignsByTypeSchema = z.object({
+  as_of_date: z.string(),
+  types: z.array(campaignTypeRowSchema),
+  note: z.string(),
+});
+
+export const campaignOverlapPointSchema = z.object({
+  n_campaigns_exposed: z.number(),
+  n_households: z.number(),
+});
+
+export const campaignOverlapSchema = z.object({
+  as_of_date: z.string(),
+  total_exposed: z.number(),
+  universe: z.number(),
+  /** Fração 0..1 = total_exposed / universe. */
+  exposure_rate: z.number(),
+  avg_campaigns_per_household: z.number(),
+  max_campaigns_per_household: z.number(),
+  distribution: z.array(campaignOverlapPointSchema),
+  note: z.string(),
+});
+
 export type Health = z.infer<typeof healthSchema>;
 export type Meta = z.infer<typeof metaSchema>;
 export type Overview = z.infer<typeof overviewSchema>;
@@ -190,6 +256,22 @@ export type RetentionMonthly = z.infer<typeof retentionMonthlySchema>;
 export type CohortPoint = z.infer<typeof cohortPointSchema>;
 export type Cohort = z.infer<typeof cohortSchema>;
 export type RetentionCohorts = z.infer<typeof retentionCohortsSchema>;
+export type CampaignPerformanceRow = z.infer<
+  typeof campaignPerformanceRowSchema
+>;
+export type CampaignPerformance = z.infer<typeof campaignPerformanceSchema>;
+export type CampaignTypeRow = z.infer<typeof campaignTypeRowSchema>;
+export type CampaignsByType = z.infer<typeof campaignsByTypeSchema>;
+export type CampaignOverlapPoint = z.infer<typeof campaignOverlapPointSchema>;
+export type CampaignOverlap = z.infer<typeof campaignOverlapSchema>;
+
+/** Colunas ordenáveis da tabela de campanhas (ordenação client-side). */
+export const CAMPAIGN_SORT_FIELDS = [
+  "households_exposed",
+  "households_redeemed",
+  "redemption_rate",
+] as const;
+export type CampaignSortField = (typeof CAMPAIGN_SORT_FIELDS)[number];
 
 /** Parâmetros aceitos por GET /rfm/households (todos opcionais). */
 export interface RfmHouseholdsParams {
@@ -318,4 +400,8 @@ export const api = {
     request("/retention/monthly", retentionMonthlySchema),
   getRetentionCohorts: () =>
     request("/retention/cohorts", retentionCohortsSchema),
+  getCampaignPerformance: () =>
+    request("/campaigns/performance", campaignPerformanceSchema),
+  getCampaignsByType: () => request("/campaigns/by-type", campaignsByTypeSchema),
+  getCampaignOverlap: () => request("/campaigns/overlap", campaignOverlapSchema),
 };

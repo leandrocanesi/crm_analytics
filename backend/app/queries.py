@@ -124,6 +124,76 @@ FROM agg_cohort_retention
 ORDER BY cohort_month ASC, months_since ASC
 """
 
+# --- Campanha e Cupom (metrics.md §8, factual 8.1–8.4) -------------------------
+# SELECTs FIXOS, sem parâmetros do cliente (CLAUDE.md regra 7). Leem só tabelas
+# publicadas. NENHUMA coluna monetária é consultada: os dados não ligam receita a
+# campanha (metrics.md §8.0 verdade 3), então não há métrica em $ aqui.
+
+# §8.1 alcance + §8.2.a taxa de resposta por campanha. Datas vêm de dim_campaign
+# (agg_campaign_performance não as traz). Ordenado por households_exposed DESC
+# (desempate por campaign_id para ordem determinística/estável).
+CAMPAIGN_PERFORMANCE = """
+SELECT
+    p.campaign_id,
+    p.campaign_type,
+    d.start_date,
+    d.end_date,
+    p.households_exposed,
+    p.households_redeemed,
+    p.redemption_rate
+FROM agg_campaign_performance AS p
+JOIN dim_campaign AS d USING (campaign_id)
+ORDER BY p.households_exposed DESC, p.campaign_id ASC
+"""
+
+# Universo alcançado (DISTINCT) — NÃO é a soma dos households_exposed por campanha
+# (metrics.md §8.0.2: alcance não é aditivo). Alimenta households_exposed_total.
+CAMPAIGN_EXPOSED_TOTAL = """
+SELECT COUNT(DISTINCT household_id) AS households_exposed_total
+FROM bridge_household_campaign
+"""
+
+# §8.4 resgate por tipo A/B/C. n_campaigns por tipo vem de dim_campaign (contagem
+# de campanhas); as demais métricas, de agg_coupon_redemption (grão tipo).
+# Ordenado por campaign_type ASC. Expostos/resgatadores NÃO são aditivos entre tipos
+# (um lar pode estar em >1 tipo); só n_redemption_events soma (= 2.102).
+CAMPAIGN_BY_TYPE = """
+SELECT
+    r.campaign_type,
+    c.n_campaigns,
+    r.households_exposed,
+    r.n_redemption_events,
+    r.households_redeemed,
+    r.n_coupons_redeemed,
+    r.redemption_rate
+FROM agg_coupon_redemption AS r
+JOIN (
+    SELECT campaign_type, COUNT(*) AS n_campaigns
+    FROM dim_campaign
+    GROUP BY campaign_type
+) AS c USING (campaign_type)
+ORDER BY r.campaign_type ASC
+"""
+
+# §8.3 sobreposição — resumo (total distinto, média, máximo). Base para a cobertura.
+CAMPAIGN_OVERLAP_SUMMARY = """
+SELECT
+    COUNT(*)                     AS total_exposed,
+    AVG(n_campaigns_exposed)     AS avg_campaigns_per_household,
+    MAX(n_campaigns_exposed)     AS max_campaigns_per_household
+FROM agg_household_campaign_exposure
+"""
+
+# §8.3 histograma: quantos domicílios receberam N campanhas. Soma = total_exposed.
+CAMPAIGN_OVERLAP_DISTRIBUTION = """
+SELECT
+    n_campaigns_exposed,
+    COUNT(*) AS n_households
+FROM agg_household_campaign_exposure
+GROUP BY n_campaigns_exposed
+ORDER BY n_campaigns_exposed ASC
+"""
+
 # Allow-list de colunas ordenáveis: nome exposto na API -> coluna física no Gold.
 # Apenas estes valores podem entrar no ORDER BY (defesa contra SQL injection).
 RFM_SORT_COLUMNS: dict[str, str] = {

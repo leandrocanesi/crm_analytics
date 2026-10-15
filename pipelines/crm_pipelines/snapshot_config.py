@@ -49,12 +49,21 @@ RETENTION_COUNT = 3
 # A ordem é estável (entra no hash de conteúdo e nos metadados).
 # ---------------------------------------------------------------------------
 GOLD_SNAPSHOT_TABLES: tuple[str, ...] = (
+    # Overview / CRM (receita, RFM, retenção).
     "fct_basket",
     "agg_weekly_revenue",
     "agg_household_rfm",
     "agg_household_activity_month",
     "agg_retention_monthly",
     "agg_cohort_retention",
+    # Campanha / cupom (Marketing Analytics, metrics.md §8 — factual 8.1–8.4).
+    # Nenhuma toca em sales_value; não entram nas reconciliações de receita.
+    "bridge_household_campaign",
+    "dim_campaign",
+    "agg_household_campaign_exposure",
+    "fct_coupon_redemption",
+    "agg_campaign_performance",
+    "agg_coupon_redemption",
 )
 
 # Nome da tabela técnica de metadados dentro do .duckdb.

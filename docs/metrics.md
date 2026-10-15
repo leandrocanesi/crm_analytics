@@ -287,3 +287,250 @@ Ordem recomendada, por dependência e valor para o Overview:
 4. **Por que estas definições:** cada grão e janela foi escolhido para (a) reconciliar com a âncora US$ 4.596.039,58 e (b) refletir a cadência de **supermercado** (compra recorrente), não de varejo esporádico.
 5. **Erro júnior a evitar:** calcular ticket médio no grão de linha, somar receita após join, usar a data de hoje para recência, e ler coorte de janeiro como "aquisição".
 6. **Como validar (sanity checks):** receita = 4.596.039,58; cestas = 155.848 (~63/domicílio); itens = 1.469.307 (~9,4/cesta); ticket ≈ US$ 29,49; domicílios ≤ 2.469; recência ∈ [0, 365]. Qualquer número que contradiga uma âncora está errado por construção.
+
+---
+
+# 8. Campanha e Cupom (Marketing Analytics) — **APROVADO (2026-10-14): só o factual 8.1–8.4**
+
+> Autor conceitual: **analytics-mentor**. Status: **APROVADO em 2026-10-14 — escopo v1 = apenas as métricas FACTUAIS 8.1, 8.2, 8.3 e 8.4.** O usuário decidiu **NÃO implementar** a receita influenciada (§8.5) nem o pré/pós-campanha (§8.6) na v1, por falta de suporte honesto nos dados (ver motivos nessas subseções). O analytics-engineer está liberado para codar **somente 8.1–8.4**.
+> Base factual: `docs/data-dictionary.md` (§§4–7: `coupons`, `coupon_redemptions`, `campaigns`, `campaign_descriptions`) e `docs/data-model.md` (§4 anti-fan-out, §4 limitação de atribuição). Nenhum campo é presumido.
+
+## 8.0 O aviso que governa TODA esta seção (leia antes de tudo)
+
+Esta é a área **analiticamente mais perigosa** do projeto. Três verdades inegociáveis, que repetirei em cada métrica:
+
+1. **Exposição ≠ efeito.** `campaigns` diz que um domicílio **foi alvo** de uma campanha (recebeu o envio). **Não** diz que ele abriu, viu, leu ou reagiu. "Alcance" é um fato de *distribuição*, nunca de *engajamento* nem de *resultado*.
+2. **Resgate ≠ conversão causada.** Um domicílio que resgatou um cupom muito provavelmente já compraria o produto (viés de autosseleção: quem resgata é quem já ia comprar). Resgate é um **evento observado**, não a prova de que a campanha **causou** a venda.
+3. **Atribuição de receita a cupom é ESTIMATIVA, nunca fato.** `transactions` registra `coupon_disc > 0` (21.889 linhas) mas **não registra qual `coupon_upc`**. Logo, não existe ligação factual entre uma linha de receita e um cupom/campanha específico. Qualquer "receita de campanha" é uma **aproximação com forte risco de erro** — e sem grupo de controle, **jamais** é causal (regra 9 do CLAUDE.md).
+
+> **Armadilha de reconciliação dos dois sinais de cupom (crítica).** Existem DOIS sinais de cupom nos dados e **eles não são a mesma coisa**:
+> - `coupon_redemptions` = **2.102** eventos de resgate dos cupons **deste estudo** (com `coupon_upc`, sem valor em $).
+> - `transactions.coupon_disc > 0` = **21.889** linhas com desconto de cupom **de fabricante em geral** (com valor em $, sem `coupon_upc`).
+>
+> Os números **não batem** (2.102 ≠ 21.889) porque `coupon_disc` capta **qualquer** cupom de fabricante, não só os 981 cupons das 27 campanhas do estudo. **Nunca** trate `coupon_disc > 0` como "resgate de campanha", nem some os dois. São populações diferentes.
+
+### 8.0.1 Âncoras factuais desta seção (fatos dos dados — não se discutem)
+
+| Âncora | Valor | Origem |
+|---|---|---|
+| **Exposições (linhas da ponte)** | **6.589** | `campaigns` (grão domicílio×campanha), 0 duplicatas |
+| **Domicílios expostos (distintos)** | **1.559** (= **63,1%** dos 2.469) | `COUNT(DISTINCT household_id)` em `campaigns` |
+| **Campanhas** | **27** (tipos A/B/C) | `campaign_descriptions` |
+| **Média de campanhas por domicílio exposto** | **4,23** (máx. 15) | 6.589 ÷ 1.559 |
+| **Cupons distintos / produtos elegíveis** | **981** cupons / **41.857** produtos | `coupons` (111.332 linhas após dedupe) |
+| **Eventos de resgate** | **2.102** | `coupon_redemptions` |
+| **Domicílios que resgataram (distintos)** | **410** (= **26,3%** dos 1.559 expostos; **16,6%** do painel) | `COUNT(DISTINCT household_id)` em `coupon_redemptions` |
+| **Cupons resgatados (distintos)** | **491** de 981 | `coupon_redemptions` |
+| **Janela das campanhas** | **2016-11-14 → 2018-02-28** | `campaign_descriptions` — **excede** a janela de transações (2017) |
+| **Janela dos resgates** | **2017-01-01 → 2017-12-31** | `coupon_redemptions` — **dentro** da janela de vendas |
+
+> **Observação temporal que condena a análise de receita por janela:** as campanhas começam antes e terminam depois dos dados de venda. Campanhas iniciadas em 2016 ou encerradas em fev/2018 têm a janela **truncada** pelos limites de `transactions` — não há como medir o período pré/durante/pós completo delas. Os **resgates**, por sorte, caem todos dentro de 2017, então as métricas factuais de resgate são seguras; as de **receita por janela**, não.
+
+### 8.0.2 Regra de ouro anti-fan-out, reforçada para campanha/cupom
+
+Reafirma a §4 do `data-model.md`. Três fan-outs específicos desta área:
+
+| Join perigoso | Por que infla | Regra segura |
+|---|---|---|
+| `transactions × campaigns` por `household_id` | domicílio tem ~4,23 campanhas → cada linha de venda multiplica por ~4 | nunca somar receita após esse join; filtrar `household_id IN (público)` e somar a fato **antes** |
+| `transactions × coupons` por `product_id` | produto aparece em vários cupons/campanhas | usar `coupons` só para montar **listas de elegibilidade**, nunca para somar receita |
+| **somar entre campanhas** (produtos elegíveis, receita, resgates por produto) | **151 cupons pertencem a >1 campanha**; produtos se repetem entre campanhas → somar o total das 27 campanhas conta o mesmo produto/linha várias vezes | métricas por campanha **não são aditivas** num total; o total de domicílios/produtos/receita é sempre `DISTINCT`, nunca `SUM` das campanhas |
+
+> **O erro que isto evita:** "a soma do alcance das 27 campanhas é 6.589, logo alcançamos 6.589 domicílios." **Errado** — são **1.559** domicílios distintos (muitos receberam várias campanhas). Alcance por campanha soma 6.589 *exposições*; o universo alcançado é 1.559 *domicílios*.
+
+---
+
+## 8.1 Alcance de campanha (reach) — **FACTUAL ✅**
+
+**Definição (1 frase):** número de domicílios distintos que foram **alvo** (receberam o envio) de uma dada campanha.
+
+| Campo | Especificação |
+|---|---|
+| **Numerador** | `COUNT(DISTINCT household_id)` em `campaigns` para a campanha |
+| **Denominador** | — (é uma contagem). Para **taxa de cobertura**: dividir por 2.469 (painel) ou por 1.559 (universo exposto) — ver §8.3 |
+| **Grão de cálculo** | **campanha** (1 linha por campanha) |
+| **Janela temporal** | a ponte `campaigns` é **atemporal** (é uma lista de alvos); a janela vem de `campaign_descriptions` (`start_date`/`end_date`) só para contexto |
+| **Data de referência** | não aplica (é distribuição, não recência) |
+| **Filtros** | nenhum — a ponte não tem linhas a excluir |
+| **Tabela Gold candidata** | `agg_campaign_performance` (grão 1 campanha): `campaign_id`, `campaign_type`, `start_date`, `end_date`, `n_households_exposed`, … |
+| **Asset check** | `reach_bounds` — `SUM(n_households_exposed)` sobre as 27 campanhas = **6.589** (linhas da ponte); `COUNT(DISTINCT household_id)` global = **1.559** ≤ 2.469 |
+
+- **Por que é factual:** `campaigns` é um registro de distribuição confirmado — não há inferência. É a métrica mais segura desta seção.
+- **Limitações explícitas:**
+  - **Alcance ≠ impressão ≠ engajamento.** "Foi alvo" não é "viu". Não há dado de abertura/clique (seria **sintético** se criado — rotular como simulado, regra do CLAUDE.md; nunca misturar com estes números reais).
+  - **Alcance não é aditivo entre campanhas** (§8.0.2). Reportar alcance por campanha **e** o universo distinto (1.559) separadamente.
+
+---
+
+## 8.2 Taxa de resgate de cupom — **FACTUAL ✅ (com definição cuidadosa do denominador)**
+
+**Definição (1 frase):** proporção de domicílios expostos a uma campanha que resgataram **pelo menos um** cupom dela.
+
+> **A decisão difícil é o denominador. O que é "enviado" aqui?** Os dados **não têm** um log de "cupom X enviado ao domicílio Y". Têm: (a) quais domicílios receberam quais **campanhas** (`campaigns`), e (b) quais **cupons** pertencem a cada campanha (`coupons`). Supor que "cada um dos N cupons da campanha foi individualmente enviado a cada domicílio exposto" é uma **inflação não verificável** do denominador. Por isso **rejeito o denominador "resgates ÷ cupons enviados"** e defino a taxa no grão em que o dado é real: a **oferta de campanha** (par domicílio×campanha).
+
+Proponho **duas taxas honestas**, em grãos diferentes:
+
+### 8.2.a Taxa de resposta por campanha (household-level) — **PRIMÁRIA**
+
+| Campo | Especificação |
+|---|---|
+| **Numerador** | `COUNT(DISTINCT household_id)` que resgataram ≥ 1 cupom **na campanha C** (de `coupon_redemptions` filtrado por `campaign_id`) |
+| **Denominador** | `COUNT(DISTINCT household_id)` **expostos à campanha C** (de `campaigns`) |
+| **Grão de cálculo** | **campanha** |
+| **Janela** | resgates em 2017 (todos caem dentro); exposição é atemporal |
+| **Filtros** | binário por domicílio (resgatou sim/não) — **não** contar eventos aqui |
+| **Tabela Gold** | `agg_campaign_performance`: `n_households_redeemed`, `redemption_rate_hh = n_households_redeemed / n_households_exposed` |
+
+### 8.2.b Taxa de resposta por oferta (par domicílio×campanha) — **SECUNDÁRIA / global**
+
+| Campo | Especificação |
+|---|---|
+| **Numerador** | nº de pares `(household_id, campaign_id)` **distintos** presentes em `coupon_redemptions` |
+| **Denominador** | **6.589** (pares domicílio×campanha ofertados = linhas de `campaigns`) |
+| **Grão de cálculo** | oferta (par domicílio×campanha); pode agregar por `campaign_type` |
+| **Tabela Gold** | `agg_campaign_performance` (por campanha) ou `agg_coupon_redemption` (por tipo) |
+
+- **Ordem de grandeza (sanity check global):** 410 domicílios resgataram de 1.559 expostos ≈ **26,3%** resgataram ao menos uma vez; 2.102 eventos ÷ 410 domicílios ≈ **5,1 resgates por domicílio resgatador**. Se a "taxa" aparecer > 100% ou os eventos forem usados como numerador sobre domicílios, há erro de grão.
+- **O erro júnior explícito a evitar:** dividir **2.102 eventos** por **1.559 domicílios** e chamar de "taxa de resgate de 135%". Evento não é domicílio; um lar resgata vários cupons. Taxas são sempre **binárias por domicílio** (resgatou/não) ou por **oferta** (par distinto); contagem de eventos é **volume**, nunca numerador de uma taxa sobre domicílios.
+- **Asset checks:**
+  - `redemption_rate_bounds` — toda taxa ∈ [0, 1].
+  - `redeemers_subset_of_exposed` — todo `(household_id, campaign_id)` de `coupon_redemptions` **existe** em `campaigns` (numerador ⊆ denominador). Se não, é violação de integridade a reportar (WARN), não a esconder.
+  - `redeemers_global` — `COUNT(DISTINCT household_id)` em resgates = **410** ≤ 1.559.
+- **Limitações explícitas:**
+  - **Resgate ≠ conversão causada** (§8.0, verdade 2): autosseleção. Não dizer "a campanha converteu 26%".
+  - **Resgate não carrega valor em $** (a tabela não tem campo monetário) — não dá para somar "valor resgatado" sem estimativa (ver §8.5).
+  - Cupom pode pertencer a >1 campanha (151 casos); o resgate traz o `campaign_id`, então o grão campanha fica íntegro — mas **não** somar resgates "por cupom" entre campanhas.
+
+---
+
+## 8.3 Participação e sobreposição de campanha — **FACTUAL ✅**
+
+**Definição (1 frase):** quanto do painel foi atingido por campanhas e quão concentradas estão as campanhas em poucos domicílios.
+
+| Campo | Especificação |
+|---|---|
+| **Cobertura do universo** | `1.559 / 2.469` = **63,1%** dos domicílios do painel foram alvo de ≥ 1 campanha |
+| **Numerador** | `COUNT(DISTINCT household_id)` expostos (1.559) |
+| **Denominador** | 2.469 (universo do painel — âncora §0) |
+| **Sobreposição** | distribuição de domicílios por **nº de campanhas recebidas** (média 4,23; máx. 15) |
+| **Grão de cálculo** | domicílio (nº de campanhas por lar) → agregar em distribuição |
+| **Tabela Gold** | `bridge_household_campaign` (grão domicílio×campanha, a Silver `campaigns` promovida) + atributo `n_campaigns_exposed` por domicílio em `dim_household` |
+| **Asset check** | `participation_coverage` — distintos expostos = 1.559; `SUM(n_campaigns_exposed)` sobre domicílios = 6.589 |
+
+- **Uso analítico:** cruzar `n_campaigns_exposed` com segmento RFM (§5) responde "a quem o marketing estava falando?" — ex.: os Campeões receberam mais campanhas? Isto é **descritivo** (quem foi alvo), não um teste de efeito.
+- **Limitações explícitas:**
+  - **Viés de seleção de público:** se domicílios de maior valor receberam mais campanhas, qualquer comparação "expostos vs. não-expostos" confunde o efeito da campanha com o fato de já serem melhores clientes. Registrar isto sempre que cruzar exposição com receita/RFM.
+  - **36,9% do painel nunca foi alvo** — esse grupo **não** é um grupo de controle válido (não foi aleatorizado; ver §8.6).
+
+---
+
+## 8.4 Resgate por campanha e por tipo (A/B/C) — **FACTUAL ✅**
+
+**Definição (1 frase):** volume e alcance de resgates, agregados por campanha e por tipo de campanha.
+
+| Campo | Especificação |
+|---|---|
+| **Métricas** | `n_redemption_events`, `n_households_redeemed` (distinto), `n_coupons_redeemed` (distinto), e a `redemption_rate_hh` da §8.2.a |
+| **Numerador/Denominador** | contagens (volume); as **taxas** normalizam por expostos (§8.2) |
+| **Grão de cálculo** | campanha **ou** `campaign_type` (A/B/C) |
+| **Janela** | resgates 2017 (todos dentro) |
+| **Filtros** | nenhum em `coupon_redemptions` (evento limpo) |
+| **Tabela Gold** | `fct_coupon_redemption` (grão 1 evento: `household_id`, `coupon_upc`, `campaign_id`, `redemption_date`, `campaign_type` via join) → agregada em `agg_coupon_redemption` (grão campanha ou tipo) |
+| **Asset check** | `redemption_event_count` — `fct_coupon_redemption` tem exatamente **2.102** linhas; distintos de domicílio = 410, de cupom = 491 |
+
+- **Por que normalizar por tipo com cuidado:** cada tipo (A/B/C) cobre nº diferente de campanhas e de domicílios. "Tipo B teve mais resgates" pode só refletir que o Tipo B foi enviado a mais gente. **Sempre reportar a taxa (resgate ÷ expostos), não só o volume bruto.**
+- **Limitações explícitas:**
+  - **A/B/C são rótulos opacos** (mecânica não documentada) — descrever, não teorizar sobre "por que o tipo X converte mais".
+  - Volume de eventos é dominado por poucos domicílios (410 lares, ~5 resgates cada) — **cauda curta e rara**; média por domicílio engana, reportar também nº de domicílios.
+
+---
+
+## 8.5 Receita "influenciada" por campanha — **ESTIMATIVA FRÁGIL ⚠️ — recomendo NÃO implementar na v1**
+
+**Minha recomendação profissional: os dados NÃO suportam um número honesto de "receita de campanha". Não produzir um headline de receita atribuída.** Abaixo explico por quê, e ofereço, no máximo, **uma** métrica *descritiva/associativa* fortemente rotulada para quem insistir — nunca um KPI.
+
+### 8.5.1 Por que a estimativa "produtos elegíveis × domicílios expostos × janela" é indefensável como headline
+
+A tentação: para a campanha C, somar `sales_value` das transações onde `household_id ∈ expostos(C)` **e** `product_id ∈ elegíveis(C)` **e** `timestamp ∈ [start_date, end_date]`. Os problemas, em ordem de gravidade:
+
+1. **Não é causal e não há contrafactual.** O lar compraria pão de qualquer forma. Sem grupo de controle, isto mede "receita que ocorreu perto da campanha", não "receita gerada pela campanha". Chamá-la de "influenciada" já é meio-caminho para a mentira.
+2. **O cupom aplicado é desconhecido** (§8.0, verdade 3): `transactions` não tem `coupon_upc`, então nem se sabe se a venda do produto elegível envolveu o cupom. A "elegibilidade" é só "o produto estava na lista da campanha".
+3. **Fan-out entre campanhas** (§8.0.2): 151 cupons em >1 campanha e produtos repetidos entre campanhas → **a mesma linha de venda entra na conta de várias campanhas**. Somar o total das 27 campanhas **superestima** grosseiramente. Não existe partição limpa da receita por campanha.
+4. **Janelas truncadas** (§8.0.1): campanhas pré-2017 ou pós-jan/2018 têm período incompleto nos dados → comparação impossível ou enviesada.
+5. **Viés de seleção de público** (§8.3): expostos podem já ser mais valiosos; a "receita influenciada" herda esse viés.
+
+> Qualquer um desses pontos já bastaria para não cravar o número. Os cinco juntos tornam um headline de "receita de campanha" **irresponsável**. Um analista júnior que entrega "a campanha 18 gerou US$ X" está, na prática, inventando — sem perceber.
+
+### 8.5.2 A ÚNICA forma descritiva aceitável (opcional, rotulada como associação, não atribuição)
+
+Se o usuário quiser **alguma** cifra ligada a resgate, a menos enganosa é a **receita das cestas em que houve resgate** — associação por domicílio e dia, sem reivindicar causa:
+
+| Campo | Especificação |
+|---|---|
+| **Definição** | receita das cestas feitas por um domicílio **no dia em que ele resgatou** um cupom |
+| **Numerador** | `SUM(fct_basket.basket_revenue)` das cestas onde `(household_id, DATE(transaction_timestamp))` casa com um `(household_id, redemption_date)` de `coupon_redemptions` |
+| **Denominador** | — (é um total descritivo; pode-se reportar como % da receita observada total, com ressalva) |
+| **Grão de cálculo** | cesta (casada ao evento de resgate por domicílio×dia) |
+| **Janela / data-ref** | 2017 (resgates dentro da janela) |
+| **Tabela Gold candidata** | visão derivada de `fct_basket` × `fct_coupon_redemption` por `(household_id, data)` — **não** materializar como "receita de campanha" |
+| **Asset check** | `redemption_basket_match_bounds` — receita casada ≤ receita observada total (US$ 4.596.039,58); nº de cestas casadas documentado |
+
+- **Ressalvas que DEVEM acompanhar o número, sempre:**
+  - É **associação por coincidência de dia**, não atribuição: a cesta inteira (não só o item do cupom) é contada, e ela existiria sem o cupom.
+  - **Resgate day-grain** pode casar com >1 cesta do mesmo dia → definir explicitamente (ex.: casar todas as cestas do dia) e aceitar o ruído.
+  - **Base minúscula** (410 domicílios) → não extrapolar para o painel.
+  - **Nunca** rotular como "receita gerada/influenciada pela campanha". Rótulo honesto: *"receita observada em cestas coincidentes com resgate (associativo)"*.
+
+---
+
+## 8.6 Pré/pós-campanha — **EXPLORATÓRIO ⚠️ — adiar; só com aviso causal forte**
+
+**Definição (1 frase):** comparar o gasto dos domicílios expostos **antes** vs. **durante/depois** da janela da campanha.
+
+**Veredito: não é um KPI; na melhor hipótese é um gráfico didático com advertência. Recomendo adiar para depois dos fundamentos de campanha estarem validados.**
+
+| Campo | Especificação (se feito) |
+|---|---|
+| **Definição** | para expostos à campanha C: `SUM(sales_value)` ou ticket médio num período **antes** de `start_date` vs. período **durante/depois** |
+| **Grão de cálculo** | domicílio × período (pré/pós) |
+| **Data de referência** | `start_date`/`end_date` da campanha (de `campaign_descriptions`), **nunca** a data atual |
+| **Filtros** | só campanhas com janela pré **e** pós **inteiramente dentro** de 2017-01-01 → 2018-01-01 (exclui as truncadas — §8.0.1) |
+| **Tabela Gold** | nenhuma dedicada na v1; derivável de `fct_basket` + `dim_campaign` se aprovado |
+
+- **Por que é perigoso (os confundidores que impedem leitura causal):**
+  - **Sem grupo de controle aleatorizado.** Os 36,9% não-expostos **não** são controle válido (seleção de público — §8.3).
+  - **Sazonalidade:** campanhas coincidem com datas comerciais; o "pós" pode subir por feriado, não por campanha.
+  - **Regressão à média / seleção:** se a campanha mirou quem comprava muito, o "pós" tende a cair naturalmente (e vice-versa).
+  - **Truncamento de janela** elimina várias das 27 campanhas.
+  - **Múltiplas campanhas simultâneas** por domicílio (4,23 em média) → impossível isolar o efeito de uma.
+- **Se mesmo assim for feito:** rotular como **"comparação observacional, sem controle, sem reivindicação causal"**; nunca a frase "a campanha aumentou as vendas em X%".
+
+---
+
+## 8.7 Resumo da seção — o que implementar e o que evitar (para aprovação)
+
+| # | Métrica | Classe | Tabela Gold | Recomendação |
+|---|---|---|---|---|
+| 8.1 | Alcance por campanha | **Factual ✅** | `agg_campaign_performance` | **Implementar 1º** — base segura |
+| 8.3 | Participação / cobertura / sobreposição | **Factual ✅** | `bridge_household_campaign` + `dim_household.n_campaigns_exposed` | **Implementar 1º** |
+| 8.4 | Resgate por campanha e tipo | **Factual ✅** | `fct_coupon_redemption` → `agg_coupon_redemption` | **Implementar 2º** |
+| 8.2 | Taxa de resgate (resposta) | **Factual ✅** (denominador = expostos ou oferta, nunca "cupons enviados") | `agg_campaign_performance` | **Implementar 2º** (depende de 8.1 e 8.4) |
+| 8.5 | Receita "influenciada" | **Estimativa frágil ⚠️** | — (no máximo visão associativa rotulada) | **NÃO implementar como KPI**; se exigido, só a versão associativa §8.5.2, rotulada |
+| 8.6 | Pré/pós-campanha | **Exploratório ⚠️** | — | **Adiar**; só didático, com advertência causal |
+
+**Ordem recomendada de construção:**
+1. `bridge_household_campaign` + `dim_campaign` (fundação atemporal: quem recebeu o quê; metadados das 27 campanhas).
+2. `agg_campaign_performance` (grão campanha: alcance §8.1 + taxas de resgate §8.2).
+3. `fct_coupon_redemption` + `agg_coupon_redemption` (grão evento → tipo: §8.4).
+4. Atributo `n_campaigns_exposed` em `dim_household` (habilita cruzar exposição × RFM — descritivo).
+5. **Parar aqui na v1.** Receita influenciada (§8.5) e pré/pós (§8.6) só após decisão explícita do usuário, cientes das ressalvas.
+
+**Princípio da seção:** entregar o que é **factual** (alcance, participação, resgate) com confiança total; tratar o que é **estimado** (receita influenciada, pré/pós) como território que os dados não sustentam para afirmação causal. É mais valioso um dashboard honesto que diz "estes lares foram alvo e estes resgataram" do que um número bonito de "ROI de campanha" que não se sustenta.
+
+### Mentoria rápida (fecho da §8)
+1. **Problema de negócio:** "a quem o marketing falou, e quem respondeu?" — não "quanto o marketing fez de caixa" (isto os dados não respondem honestamente).
+2. **Conceito de Marketing Analytics:** o funil aqui só tem dois degraus **mensuráveis** — **exposição** (`campaigns`) e **resgate** (`coupon_redemptions`). Impressão, abertura, clique e **conversão causal** não existem nestes dados (se simulados, rotular como simulados).
+3. **Como os dados são usados:** `campaigns` dá o denominador (expostos), `coupon_redemptions` dá o numerador (resgataram), `campaign_descriptions` dá tipo/janela, `coupons` dá elegibilidade (para contexto, nunca para somar receita).
+4. **Por que estas definições:** taxa no grão de **domicílio/oferta** (não de evento) evita taxas > 100%; receita **nunca** somada após join com campanha/cupom (fan-out §8.0.2); "influenciada" rebaixada a associação porque falta `coupon_upc` e grupo de controle.
+5. **Erro júnior a evitar:** (a) somar alcance das 27 campanhas e dizer "6.589 domicílios"; (b) dividir 2.102 eventos por 1.559 lares e chamar de "taxa"; (c) somar `coupon_disc` como "valor resgatado da campanha"; (d) dizer "a campanha gerou X de receita"; (e) ler pré/pós como efeito causal.
+6. **Como validar (sanity checks):** exposições = 6.589; expostos distintos = 1.559 (63,1%); campanhas = 27; resgates = 2.102; resgatadores = 410 (26,3% dos expostos); cupons resgatados = 491; toda taxa ∈ [0,1]; numerador de resgate ⊆ expostos; receita associativa ≤ 4.596.039,58. Qualquer "receita de campanha" somada entre campanhas que ultrapasse a receita observada total é prova de fan-out.

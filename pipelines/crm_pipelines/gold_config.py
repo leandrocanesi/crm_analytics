@@ -31,10 +31,17 @@ from dataclasses import dataclass, field
 from .config import (
     AS_OF_DATE,
     BASKET_ANCHOR,
+    CAMPAIGN_COUNT,
+    CAMPAIGN_EXPOSURE_ANCHOR,
+    COUPONS_REDEEMED_ANCHOR,
     DATA_WINDOW_END,
     DATA_WINDOW_START,
+    EXPOSED_HOUSEHOLDS_ANCHOR,
     HOUSEHOLD_UNIVERSE,
     LINE_ANCHOR,
+    REDEEMER_HOUSEHOLDS_ANCHOR,
+    REDEEMER_PAIRS_ANCHOR,
+    REDEMPTION_EVENT_ANCHOR,
     REVENUE_ANCHOR_TOL_USD,
     REVENUE_ANCHOR_USD,
 )
@@ -307,6 +314,145 @@ SELECT
 FROM activity a
 JOIN cohort_sizes c USING (cohort_month)
 ORDER BY a.cohort_month, a.activity_month
+"""
+
+
+# ===========================================================================
+# CAMPANHA / CUPOM (Marketing Analytics) — metrics.md §8, escopo v1 = SÓ o
+# factual 8.1–8.4. *** REGRA ANTI-FAN-OUT (§8.0.2): NENHUMA destas tabelas toca
+# em sales_value — exposição e resgate são EVENTOS/DISTRIBUIÇÃO, nunca receita.
+# Receita influenciada (§8.5) e pré/pós (§8.6) foram EXCLUÍDAS da v1. ***
+# campaign_type preserva o valor REAL da origem ('Type A'/'Type B'/'Type C');
+# não se inventa um código 'A/B/C' (CLAUDE.md regra 1 / data-dictionary §7).
+# ===========================================================================
+
+# 7) bridge_household_campaign — grão 1 DOMICÍLIO × CAMPANHA (§8.3). Ponte N:N
+#    limpa, promovida da Silver `campaigns` (quem foi ALVO de cada campanha —
+#    distribuição, NÃO engajamento §8.0 verdade 1). Base do não-fan-out: alcance
+#    e taxas derivam DELA, nunca de um join com transactions. 6.589 pares
+#    distintos (0 duplicatas), 1.559 domicílios distintos.
+_SQL_BRIDGE_HOUSEHOLD_CAMPAIGN = """
+SELECT
+    campaign_id,
+    household_id
+FROM {silver_campaigns}
+"""
+
+# 8) dim_campaign — grão 1 CAMPANHA (§8.1/8.4). As 27 campanhas com tipo e janela
+#    (de campaign_descriptions) + households_exposed = alcance (§8.1). LEFT JOIN a
+#    partir das descrições => a dimensão tem SEMPRE as 27 campanhas, mesmo que
+#    alguma viesse a ter 0 exposição (hoje todas as 27 têm >= 1). households_exposed
+#    = COUNT(DISTINCT household) na ponte; como os pares são distintos, a SOMA de
+#    households_exposed pelas campanhas == 6.589 (as linhas da ponte). ATENÇÃO: o
+#    alcance NÃO é aditivo num "universo" — o universo alcançado é 1.559 DISTINTOS,
+#    não a soma 6.589 (§8.0.2).
+_SQL_DIM_CAMPAIGN = """
+SELECT
+    d.campaign_id,
+    d.campaign_type,                              -- 'Type A' | 'Type B' | 'Type C' (valor real)
+    d.start_date,
+    d.end_date,
+    COUNT(DISTINCT b.household_id) AS households_exposed  -- alcance (§8.1)
+FROM {silver_campaign_descriptions} d
+LEFT JOIN {gold_bridge_household_campaign} b USING (campaign_id)
+GROUP BY d.campaign_id, d.campaign_type, d.start_date, d.end_date
+"""
+
+# 9) agg_household_campaign_exposure — grão 1 DOMICÍLIO EXPOSTO (§8.3). Atributo
+#    n_campaigns_exposed = nº de campanhas que cada lar recebeu (sobreposição;
+#    média 4,23, máx. 15). Habilita cruzar exposição × segmento RFM depois
+#    (DESCRITIVO — "a quem o marketing falou", NÃO teste de efeito; viés de
+#    seleção de público §8.3). Cobre só os 1.559 EXPOSTOS; um cruzamento futuro com
+#    os 2.469 trata ausência como 0. SUM(n_campaigns_exposed) == 6.589.
+_SQL_AGG_HOUSEHOLD_CAMPAIGN_EXPOSURE = """
+SELECT
+    household_id,
+    COUNT(DISTINCT campaign_id) AS n_campaigns_exposed
+FROM {gold_bridge_household_campaign}
+GROUP BY household_id
+"""
+
+# 10) fct_coupon_redemption — grão 1 EVENTO DE RESGATE (§8.4). Fato de evento
+#     (2.102 linhas), colunas reais de coupon_redemptions + campaign_type por join
+#     (contexto). *** NÃO é multiplicador de receita: a tabela não tem campo
+#     monetário e NÃO se liga a uma linha de venda (§8.0 verdade 3). *** Resgate é
+#     evento observado, NÃO conversão causada (§8.0 verdade 2). LEFT JOIN preserva
+#     os 2.102 eventos mesmo se o FK falhar (verificado: 0 falham).
+_SQL_FCT_COUPON_REDEMPTION = """
+SELECT
+    r.household_id,
+    r.coupon_upc,
+    r.campaign_id,
+    r.redemption_date,
+    d.campaign_type        -- 'Type A/B/C' via join (contexto p/ agregar por tipo)
+FROM {silver_coupon_redemptions} r
+LEFT JOIN {silver_campaign_descriptions} d USING (campaign_id)
+"""
+
+# 11) agg_campaign_performance — grão 1 CAMPANHA (§8.1/8.2). Alcance + taxa de
+#     resposta HOUSEHOLD-LEVEL. households_redeemed = domicílios DISTINTOS que
+#     resgataram >= 1 cupom ligado à campanha; redemption_rate = redeemed /
+#     EXPOSTOS (§8.2.a — denominador é EXPOSTOS, jamais "cupons enviados").
+#     *** A taxa é binária por domicílio (resgatou sim/não); o EVENTO nunca é
+#     numerador de taxa — dividir 2.102 eventos por domicílios daria "135%",
+#     o erro júnior clássico (§8.2). *** LEFT JOIN => as 27 campanhas aparecem;
+#     campanha sem resgate (ex.: campanha 24) fica com redeemed=0, rate=0,0.
+_SQL_AGG_CAMPAIGN_PERFORMANCE = """
+WITH redeemed AS (
+    SELECT
+        campaign_id,
+        COUNT(DISTINCT household_id) AS households_redeemed
+    FROM {gold_fct_coupon_redemption}
+    GROUP BY campaign_id
+)
+SELECT
+    c.campaign_id,
+    c.campaign_type,
+    c.households_exposed,
+    COALESCE(r.households_redeemed, 0) AS households_redeemed,
+    -- taxa de resposta household-level: resgatadores DISTINTOS / expostos (∈[0,1]).
+    COALESCE(r.households_redeemed, 0)::DOUBLE / c.households_exposed AS redemption_rate
+FROM {gold_dim_campaign} c
+LEFT JOIN redeemed r USING (campaign_id)
+ORDER BY CAST(c.campaign_id AS INTEGER)
+"""
+
+# 12) agg_coupon_redemption — grão 1 TIPO DE CAMPANHA (A/B/C) (§8.4). Volume e
+#     alcance de resgate por tipo, NORMALIZADO por expostos. *** Reportar a taxa
+#     (resgate/expostos), não só o volume: "Tipo X teve mais resgates" pode só
+#     refletir que foi enviado a mais gente. *** n_redemption_events é ADITIVO
+#     (cada evento tem exatamente 1 campanha => 1 tipo) e soma 2.102; já
+#     households_exposed / households_redeemed / n_coupons_redeemed NÃO são aditivos
+#     entre tipos (um lar/cupom pode cair em >1 tipo) — por isso cada um é DISTINCT
+#     dentro do tipo e a soma entre tipos excede os totais globais (esperado).
+_SQL_AGG_COUPON_REDEMPTION = """
+WITH exposed AS (
+    SELECT
+        c.campaign_type,
+        COUNT(DISTINCT b.household_id) AS households_exposed   -- distinto DENTRO do tipo
+    FROM {gold_bridge_household_campaign} b
+    JOIN {gold_dim_campaign} c USING (campaign_id)
+    GROUP BY c.campaign_type
+),
+redeemed AS (
+    SELECT
+        campaign_type,
+        COUNT(*)                     AS n_redemption_events,   -- volume (aditivo => 2.102)
+        COUNT(DISTINCT household_id) AS households_redeemed,   -- distinto DENTRO do tipo
+        COUNT(DISTINCT coupon_upc)   AS n_coupons_redeemed     -- distinto DENTRO do tipo
+    FROM {gold_fct_coupon_redemption}
+    GROUP BY campaign_type
+)
+SELECT
+    e.campaign_type,
+    e.households_exposed,
+    COALESCE(r.n_redemption_events, 0) AS n_redemption_events,
+    COALESCE(r.households_redeemed, 0)  AS households_redeemed,
+    COALESCE(r.n_coupons_redeemed, 0)   AS n_coupons_redeemed,
+    COALESCE(r.households_redeemed, 0)::DOUBLE / e.households_exposed AS redemption_rate
+FROM exposed e
+LEFT JOIN redeemed r USING (campaign_type)
+ORDER BY e.campaign_type
 """
 
 
@@ -600,6 +746,270 @@ GOLD_SPECS: tuple[GoldSpec, ...] = (
                         FROM (SELECT DISTINCT cohort_month, cohort_size FROM {{this}})
                     ) WHERE total <> {HOUSEHOLD_UNIVERSE}
                 """,
+            ),
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # CAMPANHA / CUPOM (metrics.md §8, v1 factual 8.1–8.4). Ordem de construção
+    # §8.7: bridge -> dim_campaign -> fct_coupon_redemption ->
+    # agg_campaign_performance -> agg_coupon_redemption; + exposure por domicílio.
+    # NENHUMA toca em sales_value (anti-fan-out §8.0.2).
+    # -----------------------------------------------------------------------
+    GoldSpec(
+        name="bridge_household_campaign",
+        transform_sql=_SQL_BRIDGE_HOUSEHOLD_CAMPAIGN,
+        grain="1 domicílio × campanha (campaign_id, household_id)",
+        grain_columns=("campaign_id", "household_id"),
+        expected_rows=CAMPAIGN_EXPOSURE_ANCHOR,  # 6.589 pares (âncora §8.0.1)
+        silver_deps=("campaigns",),
+        description=(
+            "Ponte N:N domicílio×campanha (quem foi ALVO de cada campanha; §8.3). "
+            "Promovida de silver.campaigns. Base do não-fan-out: alcance/taxas "
+            "derivam dela, nunca de join com transactions. Exposição = distribuição, "
+            "NÃO engajamento (§8.0). 6.589 pares, 1.559 domicílios distintos."
+        ),
+        reconcile_checks=(
+            ReconcileCheck(
+                name="exposed_households_distinct",
+                description="COUNT(DISTINCT household_id) == 1.559 (âncora §8.0.1).",
+                value_expr="COUNT(DISTINCT household_id)",
+                expected=float(EXPOSED_HOUSEHOLDS_ANCHOR),
+                tol=0.0,
+            ),
+            ReconcileCheck(
+                name="campaigns_distinct",
+                description="COUNT(DISTINCT campaign_id) == 27 (todas as campanhas têm alvo).",
+                value_expr="COUNT(DISTINCT campaign_id)",
+                expected=float(CAMPAIGN_COUNT),
+                tol=0.0,
+            ),
+        ),
+    ),
+    GoldSpec(
+        name="dim_campaign",
+        transform_sql=_SQL_DIM_CAMPAIGN,
+        grain="1 campanha (campaign_id)",
+        grain_columns=("campaign_id",),
+        expected_rows=CAMPAIGN_COUNT,  # 27
+        silver_deps=("campaign_descriptions",),
+        gold_deps=("bridge_household_campaign",),
+        description=(
+            "Dimensão de campanha (§8.1/8.4): campaign_type ('Type A/B/C', valor "
+            "real), start_date, end_date e households_exposed (alcance, §8.1). "
+            "Alcance NÃO é aditivo: a soma das 27 dá 6.589 exposições, mas o "
+            "universo alcançado é 1.559 domicílios distintos (§8.0.2)."
+        ),
+        reconcile_checks=(
+            ReconcileCheck(
+                name="sum_exposed_equals_bridge_rows",
+                description="SUM(households_exposed) == 6.589 (pares da ponte; não é o universo).",
+                value_expr="SUM(households_exposed)",
+                expected=float(CAMPAIGN_EXPOSURE_ANCHOR),
+                tol=0.0,
+            ),
+        ),
+        violation_checks=(
+            ViolationCheck(
+                name="campaign_type_domain",
+                description="campaign_type em {'Type A','Type B','Type C'} (domínio real §7).",
+                where_expr="campaign_type NOT IN ('Type A', 'Type B', 'Type C')",
+            ),
+            ViolationCheck(
+                name="households_exposed_positive",
+                description="Toda campanha tem >= 1 domicílio exposto.",
+                where_expr="households_exposed < 1",
+            ),
+        ),
+    ),
+    GoldSpec(
+        name="agg_household_campaign_exposure",
+        transform_sql=_SQL_AGG_HOUSEHOLD_CAMPAIGN_EXPOSURE,
+        grain="1 domicílio exposto (household_id)",
+        grain_columns=("household_id",),
+        expected_rows=EXPOSED_HOUSEHOLDS_ANCHOR,  # 1.559
+        gold_deps=("bridge_household_campaign",),
+        description=(
+            "Sobreposição de campanha por domicílio (§8.3): n_campaigns_exposed = "
+            "nº de campanhas recebidas por lar (média 4,23; máx. 15). Habilita "
+            "cruzar exposição × RFM (DESCRITIVO, não efeito; viés de seleção §8.3). "
+            "Cobre só os 1.559 expostos."
+        ),
+        reconcile_checks=(
+            ReconcileCheck(
+                name="sum_exposures_equals_bridge_rows",
+                description="SUM(n_campaigns_exposed) == 6.589 (total de exposições).",
+                value_expr="SUM(n_campaigns_exposed)",
+                expected=float(CAMPAIGN_EXPOSURE_ANCHOR),
+                tol=0.0,
+            ),
+        ),
+        violation_checks=(
+            ViolationCheck(
+                name="n_campaigns_exposed_positive",
+                description="Todo domicílio da tabela recebeu >= 1 campanha.",
+                where_expr="n_campaigns_exposed < 1",
+            ),
+        ),
+    ),
+    GoldSpec(
+        name="fct_coupon_redemption",
+        transform_sql=_SQL_FCT_COUPON_REDEMPTION,
+        grain="1 evento de resgate (household_id, coupon_upc, campaign_id, redemption_date)",
+        grain_columns=("household_id", "coupon_upc", "campaign_id", "redemption_date"),
+        expected_rows=REDEMPTION_EVENT_ANCHOR,  # 2.102
+        silver_deps=("coupon_redemptions", "campaign_descriptions"),
+        description=(
+            "Fato de evento de resgate (§8.4): 2.102 eventos com campaign_type por "
+            "join. NÃO é multiplicador de receita (sem campo monetário; sem ligação "
+            "à linha de venda, §8.0 verdade 3). Resgate = evento observado, NÃO "
+            "conversão causada (§8.0 verdade 2)."
+        ),
+        reconcile_checks=(
+            ReconcileCheck(
+                name="redeemer_households_distinct",
+                description="COUNT(DISTINCT household_id) == 410 (resgatadores, âncora §8.0.1).",
+                value_expr="COUNT(DISTINCT household_id)",
+                expected=float(REDEEMER_HOUSEHOLDS_ANCHOR),
+                tol=0.0,
+            ),
+            ReconcileCheck(
+                name="redeemed_coupons_distinct",
+                description="COUNT(DISTINCT coupon_upc) == 491 (cupons resgatados, âncora §8.0.1).",
+                value_expr="COUNT(DISTINCT coupon_upc)",
+                expected=float(COUPONS_REDEEMED_ANCHOR),
+                tol=0.0,
+            ),
+        ),
+        violation_checks=(
+            ViolationCheck(
+                name="campaign_type_present",
+                description="Todo evento tem campaign_type (FK campaign_id resolvida).",
+                where_expr="campaign_type IS NULL",
+            ),
+        ),
+        integrity_checks=(
+            IntegrityCheck(
+                name="fk_campaign_id_in_descriptions",
+                description=(
+                    "Todo campaign_id de resgate existe em campaign_descriptions "
+                    "(FK válida)."
+                ),
+                count_sql="""
+                    SELECT COUNT(*) FROM {this} f
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM {silver_campaign_descriptions} d
+                        WHERE d.campaign_id = f.campaign_id
+                    )
+                """,
+            ),
+        ),
+    ),
+    GoldSpec(
+        name="agg_campaign_performance",
+        transform_sql=_SQL_AGG_CAMPAIGN_PERFORMANCE,
+        grain="1 campanha (campaign_id)",
+        grain_columns=("campaign_id",),
+        expected_rows=CAMPAIGN_COUNT,  # 27
+        gold_deps=("dim_campaign", "fct_coupon_redemption", "bridge_household_campaign"),
+        description=(
+            "Desempenho por campanha (§8.1/8.2): households_exposed, "
+            "households_redeemed (distintos) e redemption_rate = redeemed/EXPOSTOS "
+            "(household-level, ∈[0,1]). Denominador = expostos, nunca 'cupons "
+            "enviados' (§8.2). Evento NUNCA é numerador de taxa. Observacional: "
+            "resgate != conversão causada (§8.0)."
+        ),
+        reconcile_checks=(
+            ReconcileCheck(
+                name="sum_exposed_equals_bridge_rows",
+                description="SUM(households_exposed) == 6.589 (consistência com a ponte).",
+                value_expr="SUM(households_exposed)",
+                expected=float(CAMPAIGN_EXPOSURE_ANCHOR),
+                tol=0.0,
+            ),
+            ReconcileCheck(
+                name="sum_redeemed_equals_redeemer_pairs",
+                description="SUM(households_redeemed) == 792 (pares distintos domicílio×campanha).",
+                value_expr="SUM(households_redeemed)",
+                expected=float(REDEEMER_PAIRS_ANCHOR),
+                tol=0.0,
+            ),
+        ),
+        violation_checks=(
+            ViolationCheck(
+                name="redemption_rate_in_unit_interval",
+                description="Toda redemption_rate em [0, 1].",
+                where_expr="redemption_rate < 0 OR redemption_rate > 1",
+            ),
+            ViolationCheck(
+                name="redeemed_le_exposed",
+                description="households_redeemed <= households_exposed em toda linha.",
+                where_expr="households_redeemed > households_exposed",
+            ),
+            ViolationCheck(
+                name="households_exposed_positive",
+                description="Toda campanha tem households_exposed > 0 (denominador válido).",
+                where_expr="households_exposed < 1",
+            ),
+        ),
+        integrity_checks=(
+            IntegrityCheck(
+                name="redeemers_subset_of_exposed",
+                description=(
+                    "Todo par (household_id, campaign_id) que resgatou existe na "
+                    "ponte de expostos (numerador ⊆ denominador, §8.2)."
+                ),
+                count_sql="""
+                    SELECT COUNT(*) FROM (
+                        SELECT DISTINCT household_id, campaign_id
+                        FROM {gold_fct_coupon_redemption}
+                    ) x
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM {gold_bridge_household_campaign} b
+                        WHERE b.household_id = x.household_id
+                          AND b.campaign_id = x.campaign_id
+                    )
+                """,
+            ),
+        ),
+    ),
+    GoldSpec(
+        name="agg_coupon_redemption",
+        transform_sql=_SQL_AGG_COUPON_REDEMPTION,
+        grain="1 tipo de campanha (campaign_type)",
+        grain_columns=("campaign_type",),
+        expected_rows=3,  # Type A / Type B / Type C
+        gold_deps=("bridge_household_campaign", "dim_campaign", "fct_coupon_redemption"),
+        description=(
+            "Resgate por tipo de campanha A/B/C (§8.4): n_redemption_events (volume, "
+            "aditivo => 2.102), households_redeemed e n_coupons_redeemed (distintos "
+            "DENTRO do tipo, NÃO aditivos entre tipos) e redemption_rate = "
+            "redeemed/expostos. Reportar a taxa, não só o volume (um tipo pode ter "
+            "mais resgates só por ter sido enviado a mais gente)."
+        ),
+        reconcile_checks=(
+            ReconcileCheck(
+                name="events_sum_matches",
+                description="SUM(n_redemption_events) == 2.102 (eventos são aditivos por tipo).",
+                value_expr="SUM(n_redemption_events)",
+                expected=float(REDEMPTION_EVENT_ANCHOR),
+                tol=0.0,
+            ),
+        ),
+        violation_checks=(
+            ViolationCheck(
+                name="campaign_type_domain",
+                description="campaign_type em {'Type A','Type B','Type C'}.",
+                where_expr="campaign_type NOT IN ('Type A', 'Type B', 'Type C')",
+            ),
+            ViolationCheck(
+                name="redemption_rate_in_unit_interval",
+                description="Toda redemption_rate em [0, 1].",
+                where_expr="redemption_rate < 0 OR redemption_rate > 1",
+            ),
+            ViolationCheck(
+                name="redeemed_le_exposed",
+                description="households_redeemed <= households_exposed em todo tipo.",
+                where_expr="households_redeemed > households_exposed",
             ),
         ),
     ),
