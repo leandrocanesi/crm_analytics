@@ -25,9 +25,19 @@ from crm_pipelines.config import (
     REDEEMER_PAIRS_ANCHOR,
     REDEMPTION_EVENT_ANCHOR,
     REVENUE_ANCHOR_USD,
+    SILVER_DIR,
 )
 from crm_pipelines.gold import _resolve_transform_sql
 from crm_pipelines.gold_config import GOLD_SPECS_BY_NAME
+
+# fct_basket, bridge_household_campaign e fct_coupon_redemption derivam direto do
+# Parquet Silver (data/processed/, não versionado). Sem o Silver materializado,
+# pulamos esses testes de integração (ex.: no CI). Os testes puros — resolução de
+# placeholders e lógica de segmento RFM sintética — não tocam o disco e sempre rodam.
+_needs_silver = pytest.mark.skipif(
+    not SILVER_DIR.exists(),
+    reason="Silver ausente (data/processed/silver não versionado) — integração pulada.",
+)
 
 # Os agregados dependem de gold.fct_basket já materializado em disco.
 _FCT_BASKET_PARQUET = (GOLD_DIR / "fct_basket" / "fct_basket.parquet").as_posix()
@@ -49,6 +59,7 @@ def test_placeholders_resolve_without_braces() -> None:
         assert "{" not in sql and "}" not in sql, spec.name
 
 
+@_needs_silver
 def test_fct_basket_reconciles_anchors() -> None:
     """fct_basket reconcilia receita, nº de cestas e nº de linhas (as 3 âncoras)."""
     con = duckdb.connect()
@@ -66,6 +77,7 @@ def test_fct_basket_reconciles_anchors() -> None:
     assert row[3] == LINE_ANCHOR
 
 
+@_needs_silver
 def test_fct_basket_grain_is_one_row_per_basket() -> None:
     """Grão de fct_basket: exatamente 1 linha por basket_id (sem duplicação)."""
     con = duckdb.connect()
@@ -311,6 +323,7 @@ _needs_fct_redemption = pytest.mark.skipif(
 )
 
 
+@_needs_silver
 def test_bridge_household_campaign_anchors() -> None:
     """bridge: 6.589 pares, 1.559 domicílios distintos, 27 campanhas, sem duplicata."""
     con = duckdb.connect()
@@ -329,6 +342,7 @@ def test_bridge_household_campaign_anchors() -> None:
     assert row[3] == 0  # sem duplicatas no par (household_id, campaign_id)
 
 
+@_needs_silver
 def test_fct_coupon_redemption_anchors_and_grain() -> None:
     """fct_coupon_redemption: 2.102 eventos, 410 domicílios, 491 cupons, grão único."""
     con = duckdb.connect()

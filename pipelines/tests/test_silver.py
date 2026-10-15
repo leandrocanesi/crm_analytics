@@ -11,8 +11,17 @@ from __future__ import annotations
 import duckdb
 import pytest
 
+from crm_pipelines.config import BRONZE_DIR
 from crm_pipelines.silver import _resolve_transform_sql
 from crm_pipelines.silver_config import SILVER_SPECS_BY_NAME
+
+# As transformações Silver leem o Parquet Bronze (data/processed/, não versionado).
+# Sem o Bronze materializado, pulamos os testes de integração (ex.: no CI). O teste
+# de dependências de spec é puro (não toca o disco) e sempre roda.
+_needs_bronze = pytest.mark.skipif(
+    not BRONZE_DIR.exists(),
+    reason="Bronze ausente (data/processed/bronze não versionado) — integração pulada.",
+)
 
 
 def _run(table: str) -> duckdb.DuckDBPyRelation:
@@ -22,6 +31,7 @@ def _run(table: str) -> duckdb.DuckDBPyRelation:
     return con.sql(_resolve_transform_sql(spec))
 
 
+@_needs_bronze
 def test_coupons_exact_dedupe() -> None:
     """Dedupe exato por (coupon_upc, product_id, campaign_id): 116.204 → 111.332."""
     rel = _run("coupons")
@@ -33,6 +43,7 @@ def test_coupons_exact_dedupe() -> None:
     assert n == distinct  # sem duplicatas remanescentes
 
 
+@_needs_bronze
 def test_demographics_nulls_become_unknown() -> None:
     """home_ownership/marital_status nulos viram 'Unknown'; has_demographics=TRUE."""
     con = duckdb.connect()
@@ -51,6 +62,7 @@ def test_demographics_nulls_become_unknown() -> None:
     assert row[4] is True
 
 
+@_needs_bronze
 def test_products_brand_within_domain() -> None:
     """brand só assume valores do domínio observado {National, Private}."""
     con = duckdb.connect()
@@ -61,6 +73,7 @@ def test_products_brand_within_domain() -> None:
     assert bad == 0
 
 
+@_needs_bronze
 def test_monetary_columns_are_decimal() -> None:
     """Colunas monetárias de transactions são tipadas como DECIMAL(12,2)."""
     con = duckdb.connect()
@@ -71,6 +84,7 @@ def test_monetary_columns_are_decimal() -> None:
         assert types[col] == "DECIMAL(12,2)", f"{col} = {types[col]}"
 
 
+@_needs_bronze
 @pytest.mark.parametrize(
     "table", ["coupons", "demographics", "products", "campaign_descriptions", "campaigns"]
 )

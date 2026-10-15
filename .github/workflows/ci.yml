@@ -1,0 +1,106 @@
+name: CI
+
+# Valida CÓDIGO (lint, tipos, build, testes que rodam SEM dados), nunca dados.
+# O runner do GitHub NÃO tem os dados da dunnhumby: data/raw/ (apenas metadados são
+# versionados), data/processed/ e data/snapshots/ são gitignored. Por isso:
+#   - pipelines: testes de integração (que leem Parquet/.rds/.rda) pulam sozinhos
+#     via skipif de existência dos artefatos; só os testes puros rodam;
+#   - backend: os testes de contrato pulam sem snapshot publicado (conftest);
+#   - frontend: lint/tsc/build são estáticos e não precisam de API no ar.
+# NÃO materializamos o pipeline nem baixamos dados aqui (licença 84.51° + inviável).
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pipelines:
+    name: Pipelines (ruff + pytest sem dados)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pipelines
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pipelines/requirements.txt
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Instala o pacote local (crm_pipelines) de forma editável sem reresolver
+          # as pins do requirements.txt — tests/ não é um pacote, então o import
+          # de crm_pipelines depende desta instalação.
+          pip install -e . --no-deps
+
+      - name: Ruff (lint)
+        run: ruff check crm_pipelines tests
+
+      - name: Pytest (puros passam; integração pula sem dados)
+        run: pytest -q -rs
+
+  backend:
+    name: Backend (ruff + pytest; contratos pulam sem snapshot)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ruff (lint)
+        run: ruff check app tests
+
+      - name: Pytest (contratos pulam sem snapshot publicado)
+        run: pytest -q -rs
+
+  frontend:
+    name: Frontend (lint + tsc + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: TypeScript (strict, noEmit)
+        run: npx tsc --noEmit
+
+      - name: Build (Vite)
+        run: npm run build
